@@ -1,0 +1,392 @@
+---
+title: "Sociodemographic Drivers of Mental Health (Binary)"
+author: "Emily Tyszka"
+date: "`r Sys.Date()`"
+linkcolor: blue
+output:
+  rmdformats::readthedown:
+    highlight: kate
+    number_sections: true
+    code_folding: show
+    df_print: paged
+---
+
+# Initial Setup and Package Loads in R 
+```{r package loads, message = FALSE, comment = NA}
+
+library(Epi); library(janitor); library(here); library(readxl); library(magrittr); 
+library(haven); library(MASS); library(skimr); library(naniar); library(car); 
+library(rms); library(broom); library(DescTools); library(psych); library(caret); 
+library(GGally); library(knitr); library(tidyverse) 
+
+```
+
+# Load raw data. 
+
+```{r load_data, warning = FALSE}
+
+masterraw <- read_dta(file = "data.11132020.dta")
+
+```
+
+
+# Mutate variables to correct type
+```{r mutate, warning = FALSE}
+
+master<- masterraw %>% 
+  mutate(USRace =as.factor(USRace)) %>%
+  mutate(PatientSex = as.factor(PatientSex))%>%
+  mutate(Householdincome = as.factor(Householdincome)) %>%
+  mutate(LiveWithOtherPeople = as.factor(LiveWithOtherPeople)) %>%
+  mutate(MSHealthCareProvider = as.factor(MSHealthCareProvider)) %>%
+  mutate(MSHealthCareLocation = as.factor(MSHealthCareLocation)) %>%
+  mutate(HighEducLevel = as.factor(HighEducLevel)) %>%
+  mutate(MaritalStatus = as.factor(MaritalStatus)) %>%
+  mutate(EmployStatus = as.factor(EmployStatus)) %>%
+  mutate(BetterMentalHealth = as.factor(BetterMentalHealth)) 
+
+```
+
+
+
+# Summary of variables being investigated
+|       Variable         |  Description                                                                       |
+|------------------------|------------------------------------------------------------------------------------|
+|   BetterMentalHealth   | OUTCOME - Mental health (0 = Poor/Fair Mental Health, 1 = Better Mental Health)    |
+|        USRace          | Race (AI/NH, Asian, Black, Don't know, MiddleEastern, Multiracial, White)          | 
+|      PatientSex        | Sex (F, M, Other)                                                                  |
+|     USInsurance2       | Insurance Type (Public, None, Other, Private, Combination, VA)                       |
+|  LiveWithOtherPeople   | Live alone or with others (LiveAlone, PreferNotAnswer, Yes )                       |
+|  MSHealthCareLocation  | Provider of care (GenNeuroClinic, MSCenter, NoTreatmentLocation, OtherLocation, PrimaryCareCommunityHealth)|
+|     HighEducLevel      | Highest level of education (AssociateOrTechnical, College, MastersPlus, LessThanHighSchool, HighSchool, SomeCollege)|
+|     MaritalStatus      | Marital status (MarriedOrCohabitating, Unmarried, Separated)                       |
+|     EmployStatus       | Employment status (Unemployed, Employed, Student)                                  |
+|    Householdincome     | Yearly household income group (Less than $15,000, $15,000-$30,000, $30,001-$50,000, $50,001-$100,000, $100,001-$150,000, $150,001-$200,000, $200,001+) |
+|   overallhealth_age    | Age at time of survey, in years                                                    |
+|      AgefirstMS        | Age of first MS diagnosis, in years                                                |
+
+
+
+
+# $\chi$^2^ and Fisher Tests
+
+## Summary of $\chi$^2^ and Fisher Tests
+
+|       Variable         |  p-value for $\chi$^2^ test  |  p-value for Fisher test  |
+|------------------------|------------------------------|---------------------------|
+| US_Race | 0.1373 | 0.1535 |
+| PatientSex | 0.2273 | 0.2393 |
+| USInsurance2 | **9.8e-11** | **0.0004998** |
+| LiveWithOtherPeople | **0.004426** | **0.006497** |
+| MSHealthCareLocation | **0.5862** | **0.5772** |
+| HighEducLevel  | **2.118e-14** | **0.0004998** |
+| MaritalStatus | **8.395e-05** | **0.0004998** |
+| EmployStatus | **4.402e-13** | **0.0004998** |
+| Householdincome | **7.201e-08** | **0.0004998** |
+
+
+## US_Race
+```{r race, warning = FALSE}
+master <- master %>% 
+  mutate(USRace = as.factor(USRace))
+
+master$USRace <- fct_collapse(master$USRace,
+  "AI/NH" = "AI/NH",
+  Asian = "Asian",
+  Black = "Black",
+  DK = "DK",
+  MiddleEastern = "MiddleEastern",
+  Multiracial = "Multiracial",
+  White = "White",
+  NULL = "")
+
+summary(master$USRace)
+
+master %>%
+  tabyl(BetterMentalHealth, USRace) %>%
+  adorn_totals("row") %>%
+  adorn_percentages("row") %>%
+  adorn_pct_formatting() %>%
+  adorn_ns() %>%
+  knitr::kable() 
+```
+
+
+```{r race tests, warning = FALSE}
+chisq.test(master$BetterMentalHealth, master$USRace)
+
+racetable <- table(master$BetterMentalHealth, master$USRace)
+fisher.test(racetable)
+```
+
+## PatientSex
+```{r sex, warning = FALSE}
+master <- master %>% 
+  mutate(PatientSex = as.factor(PatientSex))
+
+master$PatientSex <- fct_collapse(master$PatientSex, NULL = c("", "PreferNotAnswer"))
+
+summary(master$PatientSex)
+
+master %>%
+  tabyl(BetterMentalHealth, PatientSex) %>%
+  adorn_totals("row") %>%
+  adorn_percentages("row") %>%
+  adorn_pct_formatting() %>%
+  adorn_ns() %>%
+  knitr::kable() 
+```
+
+
+```{r sex tests, warning = FALSE}
+chisq.test(master$BetterMentalHealth, master$PatientSex)
+
+sextable <- table(master$BetterMentalHealth, master$PatientSex)
+fisher.test(sextable)
+```
+
+## USInsurance2
+```{r insurance levels, warning = FALSE}
+master <- master %>% 
+  mutate(USInsurance = as.factor(USInsurance))
+
+summary(master$USInsurance)
+
+master$USInsurance2 <- fct_collapse(master$USInsurance,
+  Public = c("MEDICAID","MEDICARE","PUBLIC"),
+  None = "NONE",
+  Other = "OTHER",
+  Private = "PRIVATE",
+  VA = c("VA", "VA + PRIVATE","VA + PUBLIC + PRIVATE","VA + PUBLIC"),
+  Combination = "PRIVATE + PUBLIC",
+  NULL = c("DK", "PREFERNOTANSWER", NA, ""))
+```
+
+```{r insurance, warning = FALSE}
+
+summary(master$USInsurance2)
+
+master %>%
+  tabyl(BetterMentalHealth, USInsurance2) %>%
+  adorn_totals("row") %>%
+  adorn_percentages("row") %>%
+  adorn_pct_formatting() %>%
+  adorn_ns() %>%
+  knitr::kable() 
+```
+
+
+```{r insurance tests, warning = FALSE}
+chisq.test(master$BetterMentalHealth, master$USInsurance2)
+
+insurtable <- table(master$BetterMentalHealth, master$USInsurance2)
+fisher.test(insurtable, simulate.p.value = TRUE)
+```
+
+## LiveWithOtherPeople
+
+```{r others, warning = FALSE}
+
+master$LiveWithOtherPeople <- fct_collapse(master$LiveWithOtherPeople,
+  LiveAlone = "LiveAlone",
+  Yes = "Yes",
+  PreferNotAnswer = "PreferNotAnswer",
+  NULL = "")
+
+summary(master$LiveWithOtherPeople)
+
+master %>%
+  tabyl(BetterMentalHealth, LiveWithOtherPeople) %>%
+  adorn_totals("row") %>%
+  adorn_percentages("row") %>%
+  adorn_pct_formatting() %>%
+  adorn_ns() %>%
+  knitr::kable() 
+```
+
+```{r others tests, warning = FALSE}
+chisq.test(master$BetterMentalHealth, master$LiveWithOtherPeople)
+
+otherstable <- table(master$BetterMentalHealth, master$LiveWithOtherPeople)
+fisher.test(otherstable, simulate.p.value = TRUE)
+```
+
+
+## MSHealthcareLocation
+
+```{r location, warning = FALSE}
+
+master$MSHealthCareLocation <- fct_collapse(master$MSHealthCareLocation,
+  NULL = "")
+
+summary(master$MSHealthCareLocation)
+
+master %>%
+  tabyl(BetterMentalHealth, MSHealthCareLocation) %>%
+  adorn_totals("row") %>%
+  adorn_percentages("row") %>%
+  adorn_pct_formatting() %>%
+  adorn_ns() %>%
+  knitr::kable() 
+```
+
+```{r location tests, warning = FALSE}
+chisq.test(master$BetterMentalHealth, master$MSHealthCareLocation)
+
+locationtable <- table(master$BetterMentalHealth, master$MSHealthCareLocation)
+fisher.test(locationtable, simulate.p.value = TRUE)
+```
+
+
+## HighEducLevel
+
+```{r education, warning = FALSE}
+
+master$HighEducLevel <- fct_collapse(master$HighEducLevel,
+  LessThanHighSchool = "ElementaryMiddleSchool",
+  HighSchool = "HighSchoolGraduate",
+  AssociateOrTechnical = c("AssociateDegree", "TechnicalDegree"),
+  SomeCollege = "SomeCollege",
+  College = "BachelorsDegree",
+  MastersPlus = c("DoctoralDegree", "MastersDegree"),
+  NULL = c("NA","DontKnow" ))
+
+summary(master$HighEducLevel)
+
+master %>%
+  tabyl(BetterMentalHealth, HighEducLevel) %>%
+  adorn_totals("row") %>%
+  adorn_percentages("row") %>%
+  adorn_pct_formatting() %>%
+  adorn_ns() %>%
+  knitr::kable() 
+```
+
+```{r education tests, warning = FALSE}
+chisq.test(master$BetterMentalHealth, master$HighEducLevel)
+
+edutable <- table(master$BetterMentalHealth, master$HighEducLevel)
+fisher.test(edutable, simulate.p.value = TRUE)
+```
+
+## MaritalStatus
+
+```{r marital, warning = FALSE}
+
+master$MaritalStatus <- fct_collapse(master$MaritalStatus,
+  Unmarried = c("NeverMarried", "Divorced", "Widowed"),
+  MarriedOrCohabitating = c("Married", "CohabitationPartner"),
+  NULL = c("NA","PreferNotAnswer", ""))
+
+summary(master$MaritalStatus)
+
+master %>%
+  tabyl(BetterMentalHealth, MaritalStatus) %>%
+  adorn_totals("row") %>%
+  adorn_percentages("row") %>%
+  adorn_pct_formatting() %>%
+  adorn_ns() %>%
+  knitr::kable() 
+```
+
+```{r marital tests, warning = FALSE}
+chisq.test(master$BetterMentalHealth, master$MaritalStatus)
+
+maritaltable <- table(master$BetterMentalHealth, master$MaritalStatus)
+fisher.test(maritaltable, simulate.p.value = TRUE)
+```
+
+
+## EmployStatus
+
+```{r employment, warning = FALSE}
+
+master$EmployStatus <- fct_collapse(master$EmployStatus,
+  Unemployed = c("Unemployed", "UnemployedNotLooking", "Disabled", "WorkmensComp", "Homemaker", "Retired"),
+  Employed = c("Employed", "EmployedOutside", "EmployedHome"),
+  AssociateOrTechnical = c("AssociateDegree", "TechnicalDegree"),
+  NULL = c("NA","PreferNotAnswer", ""))
+
+summary(master$EmployStatus)
+
+master %>%
+  tabyl(BetterMentalHealth, EmployStatus) %>%
+  adorn_totals("row") %>%
+  adorn_percentages("row") %>%
+  adorn_pct_formatting() %>%
+  adorn_ns() %>%
+  knitr::kable() 
+```
+
+```{r employment tests, warning = FALSE}
+chisq.test(master$BetterMentalHealth, master$EmployStatus)
+
+employtable <- table(master$BetterMentalHealth, master$EmployStatus)
+fisher.test(employtable, simulate.p.value = TRUE)
+```
+
+## Householdincome 
+
+```{r income, warning = FALSE}
+
+master$Householdincome <- fct_collapse(master$Householdincome, 
+                                       "Less than $15,000" = "1",
+                                       "$15,000-$30,000" = "2",
+                                       "$30,001-$50,000" = "3",
+                                       "$50,001-$100,000" = "4",
+                                       "$100,001-$150,000" = "5",
+                                       "$150,001-$200,000" = "6",
+                                       "$200,001+" = "7",
+                                       NULL = "8", "")
+
+summary(master$Householdincome)
+
+master %>%
+  tabyl(BetterMentalHealth, Householdincome) %>%
+  adorn_totals("row") %>%
+  adorn_percentages("row") %>%
+  adorn_pct_formatting() %>%
+  adorn_ns() %>%
+  knitr::kable() 
+```
+
+```{r income tests, warning = FALSE}
+chisq.test(master$BetterMentalHealth, master$Householdincome)
+
+incometable <- table(master$BetterMentalHealth, master$Householdincome)
+fisher.test(incometable, simulate.p.value = TRUE)
+```
+
+
+# Ordinal Logistic Regression Models
+
+## Summaries of the AgeFirstMS and OVERALLHEALTH_AGE Variables
+```{r summary age first MS, warning = FALSE}
+
+summary(master$AgefirstMS)
+ggplot(data=master, aes(x = AgefirstMS))+
+  geom_histogram()
+
+```
+
+```{r summary age, warning = FALSE}
+
+summary(master$OVERALLHEALTH_AGE)
+ggplot(data=master, aes(x = OVERALLHEALTH_AGE))+
+  geom_histogram()
+ 
+```
+
+
+## Generalized Linear Model for BetterMentalHealth Variable
+
+```{r regression model ages 1, warning = FALSE}
+
+ages1 <- glm(BetterMentalHealth ~ AgefirstMS + OVERALLHEALTH_AGE, data = master, family = "binomial")
+summary(ages1)
+
+
+```
+
+
+
