@@ -1,0 +1,715 @@
+title: "MS Healthcare Behavior Analysis"
+author: "Emily Tyszka"
+date: "`r Sys.Date()`"
+linkcolor: blue
+output:
+  rmdformats::readthedown:
+    highlight: kate
+    number_sections: true
+    code_folding: show
+    df_print: paged
+---
+
+
+# Initial Setup and Package Loads in R 
+```{r package loads, message = FALSE, comment = NA}
+
+library(Epi); library(janitor); library(here); library(readxl);
+ library(skimr); library(naniar); library(car); library(rms); library(broom); 
+library(caret); library(GGally); library(knitr); library(tidyverse) 
+
+```
+
+# Load raw data. 
+
+```{r load_data, warning = FALSE}
+masterraw <- read_excel("master.112020.usa.ms.hc.xlsx") %>% 
+  tbl_df %>% clean_names()
+```
+
+# Mutate variables to correct type
+```{r mutate, warning = FALSE}
+master1 <- masterraw %>% 
+  mutate(pdds = as.factor(pdds)) %>% 
+  mutate(m_sbestcharacterizes = as.factor(m_sbestcharacterizes)) %>% 
+  mutate(race =as.factor(race)) %>%
+  mutate(patient_sex = as.factor(patient_sex))%>%
+  mutate(ethnicity = as.factor(ethnicity)) %>%
+  mutate(ms_health_care_facility = as.factor(ms_health_care_facility)) %>%
+  mutate(ms_health_care_location = as.factor(ms_health_care_location))%>%
+  mutate(us_race = as.factor(us_race))
+  
+```
+
+# Collapse Down Variables
+## Race
+```{r see levels, warning = FALSE}
+summary(master1$race)
+```
+
+```{r collapse races multi, warning = FALSE}
+master1$race2 <- fct_collapse(master1$race,
+  AfricanAmerican = "AfricanAmerican",
+  AmericanIndian = "AmericanIndian",
+  MiddleEastern = "MiddleEastern",
+  Asian = c("SouthAsian",'SouthAsian, OtherAsian', 'OtherAsian'),
+  White = "White",
+  DontKnow = "DontKnowEthnicity",
+  TwoOrMoreRaces = c('AmericanIndian, AfricanAmerican, DontKnowEthnicity',
+                        'AmericanIndian, MiddleEastern, White','AmericanIndian, SouthAsian',
+                        'AmericanIndian, White',
+                        'NativeHawaiian, White',
+                        'OtherAsian, NativeHawaiian, White, DontKnowEthnicity',
+                        'AfricanAmerican, White', 
+                        'AmericanIndian, AfricanAmerican',
+                        'AmericanIndian, AfricanAmerican, White',
+                        'AmericanIndian, OtherAsian, AfricanAmerican, White',
+                        'AmericanIndian, SouthAsian, White',
+                        'OtherAsian, AfricanAmerican, White',
+                        'MiddleEastern, White',
+                        'OtherAsian, White' ))
+master1$race2 <- factor(master1$race2, ordered=TRUE, levels =c("AfricanAmerican", "AmericanIndian","Asian","MiddleEastern","White","DontKnow","TwoOrMoreRaces"))
+summary(master1$race2)
+```
+## Ethnicity
+```{r collapse ethnicity , warning = FALSE}
+master1$ethnicity <- fct_collapse(master1$ethnicity,
+  Hispanic = "Hispanic",
+  NonHispanic = "NonHispanic",
+  NULL = c("DontKnow"))
+```
+
+## Sex 
+```{r collapse sex , warning = FALSE}
+master1$patient_sex <- fct_collapse(master1$patient_sex,
+  Male = "M",
+  Female = "F",
+  NULL = c("Other","PreferNotAnswer"))
+```
+
+## Facility 
+```{r collapse facilities, warning = FALSE}
+master1$ms_health_care_facility2 <- fct_collapse(master1$ms_health_care_facility,
+  CancerCenter = c("CANCER CENTER","Cancer Center at hospital"),
+  Doctor= c("Doctor's office", "Doctors office","dr office", 
+            "dr. office", "Dr Office or Hospital for Solumedrol"),
+  Home = "Home",
+  Hospital = c("Hospital","Mayo Clinic", "University of Penn", "University"),
+  InfusionCenter = c("Infusion Center", "Infusion Center", "infusion suite"),
+  InternalMedicine = "Internal medicine",
+  Kaiser = "Kaiser",
+  NeurologyPractice = c("Neuro Office","Neuro's practice", "Neurologist office", 
+                        "neurologist within my health care system", "neurologist's office",
+                        "Neurology practice", "OFFICE OF NEUROLOGIST", 
+                        "MS Center of Washington - solo practice of MS neurologist"),
+  Opthamologist = "Opthamologist",
+  Physiatrist = "physiatrist practice",
+  PCP = c("PRIMARY CARE PHYSICIAN", "private dr. office or PCP", "private practice", 
+          "Private practice", "private practice office"),
+  VAHospital= c("VA Hospital MS Center","VA Hospital", "VAMC"),
+  NULL = "don't understand question")
+
+
+summary(master1$ms_health_care_facility2)
+```
+
+# Race
+
+```{r race summary , warning = FALSE}
+summary(master1$race2)
+```
+
+## Provider
+```{r provider race plot, warning = FALSE}
+
+ggplot(data=master1, aes(x = usms_health_care_provider, fill = usms_health_care_provider))+
+  geom_bar()+
+  facet_wrap(~race2)+ theme(axis.text.x = element_text(angle = 90))
+
+ggplot(data=master1, aes(x = race2, fill = race2))+
+  geom_bar()+
+  facet_wrap(~usms_health_care_provider)+ theme(axis.text.x = element_text(angle = 90))
+```
+
+
+```{r provider race, warning = FALSE}
+master1 %>% 
+    tabyl(race2, usms_health_care_provider) %>%
+    adorn_totals(where = c("row", "col")) %>% # add row, column totals
+    kable 
+
+chisq.test(master1$race2, master1$usms_health_care_provider)
+```
+## Facility
+
+### With NA's
+
+```{r facility race plot, warning = FALSE}
+
+ggplot(data=master1, aes(x = ms_health_care_facility2, fill = ms_health_care_facility2))+
+  geom_bar()+
+  facet_wrap(~race2)+ theme(axis.text.x = element_text(angle = 90))
+
+ggplot(data=master1, aes(x = race2, fill = race2))+
+  geom_bar()+
+  facet_wrap(~ms_health_care_facility2)+ theme(axis.text.x = element_text(angle = 90))
+```
+
+```{r race facility, warning = FALSE}
+master1 %>% 
+    tabyl(race2, ms_health_care_facility2) %>%
+    adorn_totals(where = c("row", "col")) %>% # add row, column totals
+    kable 
+
+chisq.test(master1$race2, master1$ms_health_care_facility2)
+```
+
+### Without NA's
+
+```{r facilty race plot no na, warning = FALSE}
+master5<- drop_na(master1, ms_health_care_facility2)
+
+ggplot(data=master5, aes(x = ms_health_care_facility2, fill = ms_health_care_facility2))+
+  geom_bar()+
+  facet_wrap(~race2)+ theme(axis.text.x = element_text(angle = 90))
+
+ggplot(data=master5, aes(x = race2, fill = race2))+
+  geom_bar()+
+  facet_wrap(~ms_health_care_facility2)+ theme(axis.text.x = element_text(angle = 90))
+```
+
+```{r race facility no na, warning = FALSE}
+master5 %>% 
+    tabyl(race2, ms_health_care_facility2) %>%
+    adorn_totals(where = c("row", "col")) %>% # add row, column totals
+    kable 
+
+chisq.test(master5$race2, master5$ms_health_care_facility2)
+```
+
+## Location
+```{r location race plot, warning = FALSE}
+
+ggplot(data=master1, aes(x = usms_health_care_location, fill = usms_health_care_location))+
+  geom_bar()+
+  facet_wrap(~race2)+ theme(axis.text.x = element_text(angle = 90))
+
+ggplot(data=master1, aes(x = race2, fill = race2))+
+  geom_bar()+
+  facet_wrap(~usms_health_care_location)+ theme(axis.text.x = element_text(angle = 90))
+```
+
+
+```{r location race, warning = FALSE}
+master1 %>% 
+    tabyl(race2, usms_health_care_location) %>%
+    adorn_totals(where = c("row", "col")) %>% # add row, column totals
+    kable 
+
+chisq.test(master1$race2, master1$usms_health_care_location)
+```
+
+
+
+# US Race
+
+```{r us race summary , warning = FALSE}
+summary(master1$us_race)
+```
+
+## Provider
+```{r provider us race plot, warning = FALSE}
+
+ggplot(data=master1, aes(x = usms_health_care_provider, fill = usms_health_care_provider))+
+  geom_bar()+
+  facet_wrap(~us_race)+ theme(axis.text.x = element_text(angle = 90))
+
+ggplot(data=master1, aes(x = us_race, fill = us_race))+
+  geom_bar()+
+  facet_wrap(~usms_health_care_provider)+ theme(axis.text.x = element_text(angle = 90))
+```
+
+
+```{r provider us race, warning = FALSE}
+master1 %>% 
+    tabyl(us_race, usms_health_care_provider) %>%
+    adorn_totals(where = c("row", "col")) %>% # add row, column totals
+    kable 
+
+chisq.test(master1$us_race, master1$usms_health_care_provider)
+```
+## Facility
+
+### With NA's
+
+```{r facility us race plot, warning = FALSE}
+
+ggplot(data=master1, aes(x = ms_health_care_facility2, fill = ms_health_care_facility2))+
+  geom_bar()+
+  facet_wrap(~us_race)+ theme(axis.text.x = element_text(angle = 90))
+
+ggplot(data=master1, aes(x = us_race, fill = us_race))+
+  geom_bar()+
+  facet_wrap(~ms_health_care_facility2)+ theme(axis.text.x = element_text(angle = 90))
+```
+
+```{r us race facility, warning = FALSE}
+master1 %>% 
+    tabyl(us_race, ms_health_care_facility2) %>%
+    adorn_totals(where = c("row", "col")) %>% # add row, column totals
+    kable 
+
+chisq.test(master1$us_race, master1$ms_health_care_facility2)
+```
+
+### Without NA's
+
+```{r facility us race plot no na, warning = FALSE}
+master5<- drop_na(master1, ms_health_care_facility2)
+
+ggplot(data=master5, aes(x = ms_health_care_facility2, fill = ms_health_care_facility2))+
+  geom_bar()+
+  facet_wrap(~us_race)+ theme(axis.text.x = element_text(angle = 90))
+
+ggplot(data=master5, aes(x = us_race, fill = us_race))+
+  geom_bar()+
+  facet_wrap(~ms_health_care_facility2)+ theme(axis.text.x = element_text(angle = 90))
+```
+
+```{r us race facility no na, warning = FALSE}
+master5 %>% 
+    tabyl(us_race, ms_health_care_facility2) %>%
+    adorn_totals(where = c("row", "col")) %>% # add row, column totals
+    kable 
+
+chisq.test(master5$us_race, master5$ms_health_care_facility2)
+```
+
+## Location
+```{r location us race plot, warning = FALSE}
+
+ggplot(data=master1, aes(x = usms_health_care_location, fill = usms_health_care_location))+
+  geom_bar()+
+  facet_wrap(~us_race)+ theme(axis.text.x = element_text(angle = 90))
+
+ggplot(data=master1, aes(x = us_race, fill = us_race))+
+  geom_bar()+
+  facet_wrap(~usms_health_care_location)+ theme(axis.text.x = element_text(angle = 90))
+```
+
+
+```{r location us race, warning = FALSE}
+master1 %>% 
+    tabyl(us_race, usms_health_care_location) %>%
+    adorn_totals(where = c("row", "col")) %>% # add row, column totals
+    kable 
+
+chisq.test(master1$us_race, master1$usms_health_care_location)
+```
+
+
+# Disability
+
+```{r disability summary , warning = FALSE}
+summary(master1$pdds)
+```
+
+## Provider
+
+```{r provider disability plot, warning = FALSE}
+master2 <-drop_na(master1, pdds)
+
+ggplot(data=master2, aes(x = usms_health_care_provider, fill = usms_health_care_provider))+
+  geom_bar()+
+  facet_wrap(~pdds)+ theme(axis.text.x = element_text(angle = 90))
+
+ggplot(data=master2, aes(x = pdds, fill = pdds))+
+  geom_bar()+
+  facet_wrap(~usms_health_care_provider)+ theme(axis.text.x = element_text(angle = 90))
+```
+
+```{r provider disability, warning = FALSE}
+
+master2 %>% 
+    tabyl(usms_health_care_provider, pdds) %>%
+    adorn_totals(where = c("row", "col")) %>% # add row, column totals
+    kable 
+
+chisq.test(master2$usms_health_care_provider, master2$pdds)
+```
+
+## Facility
+### With NA's
+```{r facility disability plot, warning = FALSE}
+
+ggplot(data=master1, aes(x = ms_health_care_facility2, fill = ms_health_care_facility2))+
+  geom_bar()+
+  facet_wrap(~pdds)+ theme(axis.text.x = element_text(angle = 90))
+
+ggplot(data=master1, aes(x =pdds, fill = pdds))+
+  geom_bar()+
+  facet_wrap(~ms_health_care_facility2)+ theme(axis.text.x = element_text(angle = 90))
+```
+
+```{r disability facility, warning = FALSE}
+master1 %>% 
+    tabyl(pdds, ms_health_care_facility2) %>%
+    adorn_totals(where = c("row", "col")) %>% # add row, column totals
+    kable 
+
+chisq.test(master1$pdds, master1$ms_health_care_facility2)
+```
+
+### Without NA's
+```{r facility disability plot no na, warning = FALSE}
+
+ggplot(data=master5, aes(x = ms_health_care_facility2, fill = ms_health_care_facility2))+
+  geom_bar()+
+  facet_wrap(~pdds)+ theme(axis.text.x = element_text(angle = 90))
+
+ggplot(data=master5, aes(x =pdds, fill = pdds))+
+  geom_bar()+
+  facet_wrap(~ms_health_care_facility2)+ theme(axis.text.x = element_text(angle = 90))
+```
+
+```{r disability facility no na, warning = FALSE}
+master5 %>% 
+    tabyl(pdds, ms_health_care_facility2) %>%
+    adorn_totals(where = c("row", "col")) %>% # add row, column totals
+    kable 
+
+chisq.test(master5$pdds, master5$ms_health_care_facility2)
+```
+
+## Location
+
+```{r location disability plot, warning = FALSE}
+
+ggplot(data=master2, aes(x = usms_health_care_location, fill = usms_health_care_location))+
+  geom_bar()+
+  facet_wrap(~pdds)+ theme(axis.text.x = element_text(angle = 90))
+
+ggplot(data=master2, aes(x = pdds, fill = pdds))+
+  geom_bar()+
+  facet_wrap(~usms_health_care_location)+ theme(axis.text.x = element_text(angle = 90))
+```
+
+```{r location disability, warning = FALSE}
+
+master2 %>% 
+    tabyl(usms_health_care_location, pdds) %>%
+    adorn_totals(where = c("row", "col")) %>% # add row, column totals
+    kable 
+
+chisq.test(master2$usms_health_care_location, master2$pdds)
+```
+
+# MS Type
+
+```{r type summary , warning = FALSE}
+summary(master1$m_sbestcharacterizes)
+```
+
+## Provider
+
+```{r provider type plot , warning = FALSE}
+ggplot(data=master1, aes(x = usms_health_care_provider, fill = usms_health_care_provider))+
+  geom_bar()+
+  facet_wrap(~m_sbestcharacterizes)+ theme(axis.text.x = element_text(angle = 90))
+
+ggplot(data=master1, aes(x = m_sbestcharacterizes, fill = m_sbestcharacterizes))+
+  geom_bar()+
+  facet_wrap(~usms_health_care_provider)+ theme(axis.text.x = element_text(angle = 90))
+```
+
+```{r provider type, warning = FALSE}
+
+master1 %>% 
+    tabyl(usms_health_care_provider, m_sbestcharacterizes) %>%
+    adorn_totals(where = c("row", "col")) %>% # add row, column totals
+    kable 
+
+chisq.test(master1$usms_health_care_provider, master1$m_sbestcharacterizes)
+
+```
+
+## Facility
+### With NA's
+```{r facility type plot, warning = FALSE}
+
+ggplot(data=master1, aes(x = ms_health_care_facility2, fill = ms_health_care_facility2))+
+  geom_bar()+
+  facet_wrap(~m_sbestcharacterizes)+ theme(axis.text.x = element_text(angle = 90))
+
+ggplot(data=master1, aes(x =m_sbestcharacterizes, fill = m_sbestcharacterizes))+
+  geom_bar()+
+  facet_wrap(~ms_health_care_facility2)+ theme(axis.text.x = element_text(angle = 90))
+```
+
+```{r type facility, warning = FALSE}
+master1 %>% 
+    tabyl(m_sbestcharacterizes, ms_health_care_facility2) %>%
+    adorn_totals(where = c("row", "col")) %>% # add row, column totals
+    kable 
+
+chisq.test(master1$m_sbestcharacterizes, master1$ms_health_care_facility2)
+```
+
+### Without NA's
+```{r facility type plot no na, warning = FALSE}
+
+ggplot(data=master5, aes(x = ms_health_care_facility2, fill = ms_health_care_facility2))+
+  geom_bar()+
+  facet_wrap(~m_sbestcharacterizes)+ theme(axis.text.x = element_text(angle = 90))
+
+ggplot(data=master5, aes(x =m_sbestcharacterizes, fill = m_sbestcharacterizes))+
+  geom_bar()+
+  facet_wrap(~ms_health_care_facility2)+ theme(axis.text.x = element_text(angle = 90))
+```
+
+```{r type facility no na, warning = FALSE}
+master5 %>% 
+    tabyl(m_sbestcharacterizes, ms_health_care_facility2) %>%
+    adorn_totals(where = c("row", "col")) %>% # add row, column totals
+    kable 
+
+chisq.test(master5$m_sbestcharacterizes, master5$ms_health_care_facility2)
+```
+
+## Location
+
+```{r location type plot , warning = FALSE}
+ggplot(data=master1, aes(x = usms_health_care_location, fill = usms_health_care_location))+
+  geom_bar()+
+  facet_wrap(~m_sbestcharacterizes)+ theme(axis.text.x = element_text(angle = 90))
+
+ggplot(data=master1, aes(x = m_sbestcharacterizes, fill = m_sbestcharacterizes))+
+  geom_bar()+
+  facet_wrap(~usms_health_care_location)+ theme(axis.text.x = element_text(angle = 90))
+```
+
+```{r location type, warning = FALSE}
+
+master1 %>% 
+    tabyl(usms_health_care_location, m_sbestcharacterizes) %>%
+    adorn_totals(where = c("row", "col")) %>% # add row, column totals
+    kable 
+
+chisq.test(master1$usms_health_care_location, master1$m_sbestcharacterizes)
+
+```
+
+# Sex
+
+```{r sex summary , warning = FALSE}
+summary(master1$patient_sex)
+  
+master3 <- drop_na(master1, patient_sex)
+summary(master3$patient_sex)
+```
+
+## Provider
+
+```{r provider sex plot , warning = FALSE}
+ggplot(data=master3, aes(x = usms_health_care_provider, fill = usms_health_care_provider))+
+  geom_bar()+
+  facet_wrap(~patient_sex)+ theme(axis.text.x = element_text(angle = 90))
+
+ggplot(data=master3, aes(x = patient_sex, fill = patient_sex))+
+  geom_bar()+
+  facet_wrap(~usms_health_care_provider)+ theme(axis.text.x = element_text(angle = 90))
+```
+
+```{r provider sex, warning = FALSE}
+
+master3 %>% 
+    tabyl(usms_health_care_provider, patient_sex) %>%
+    adorn_totals(where = c("row", "col")) %>% # add row, column totals
+    kable 
+
+chisq.test(master3$usms_health_care_provider, master3$patient_sex)
+```
+
+## Facility
+### With NA's
+```{r facility sex plot, warning = FALSE}
+
+ggplot(data=master3, aes(x = ms_health_care_facility2, fill = ms_health_care_facility2))+
+  geom_bar()+
+  facet_wrap(~patient_sex)+ theme(axis.text.x = element_text(angle = 90))
+
+ggplot(data=master3, aes(x =patient_sex, fill = patient_sex))+
+  geom_bar()+
+  facet_wrap(~ms_health_care_facility2)+ theme(axis.text.x = element_text(angle = 90))
+```
+
+```{r sex facility, warning = FALSE}
+master3 %>% 
+    tabyl(patient_sex, ms_health_care_facility2) %>%
+    adorn_totals(where = c("row", "col")) %>% # add row, column totals
+    kable 
+
+chisq.test(master3$patient_sex, master3$ms_health_care_facility2)
+```
+
+### Without NA's
+```{r facility sex plot no na, warning = FALSE}
+
+master5 <- drop_na(master3, ms_health_care_facility2)
+
+ggplot(data=master5, aes(x = ms_health_care_facility2, fill = ms_health_care_facility2))+
+  geom_bar()+
+  facet_wrap(~patient_sex)+ theme(axis.text.x = element_text(angle = 90))
+
+ggplot(data=master5, aes(x =patient_sex, fill = patient_sex))+
+  geom_bar()+
+  facet_wrap(~ms_health_care_facility2)+ theme(axis.text.x = element_text(angle = 90))
+```
+
+```{r sex facility no na, warning = FALSE}
+master5 %>% 
+    tabyl(patient_sex, ms_health_care_facility2) %>%
+    adorn_totals(where = c("row", "col")) %>% # add row, column totals
+    kable 
+
+chisq.test(master5$patient_sex, master5$ms_health_care_facility2)
+```
+## Location
+
+```{r location sex plot , warning = FALSE}
+ggplot(data=master3, aes(x = usms_health_care_location, fill = usms_health_care_location))+
+  geom_bar()+
+  facet_wrap(~patient_sex)+ theme(axis.text.x = element_text(angle = 90))
+
+ggplot(data=master3, aes(x = patient_sex, fill = patient_sex))+
+  geom_bar()+
+  facet_wrap(~usms_health_care_location)+ theme(axis.text.x = element_text(angle = 90))
+```
+
+```{r location sex, warning = FALSE}
+
+master3 %>% 
+    tabyl(usms_health_care_location, patient_sex) %>%
+    adorn_totals(where = c("row", "col")) %>% # add row, column totals
+    kable 
+
+chisq.test(master3$usms_health_care_location, master3$patient_sex)
+```
+
+# Hispanic / Non-Hispanic
+
+```{r hisp summary , warning = FALSE}
+
+summary(master1$ethnicity)
+
+master4 <- drop_na(master1, ethnicity)
+summary(master4$ethnicity)
+
+```
+
+## Provider
+
+```{r provider hisp plot , warning = FALSE}
+ggplot(data=master4, aes(x = usms_health_care_provider, fill = usms_health_care_provider))+
+  geom_bar()+
+  facet_wrap(~ethnicity)+ theme(axis.text.x = element_text(angle = 90))
+
+ggplot(data=master4, aes(x = ethnicity, fill = ethnicity))+
+  geom_bar()+
+  facet_wrap(~usms_health_care_provider)+ theme(axis.text.x = element_text(angle = 90))
+```
+
+```{r provider hisp, warning = FALSE}
+
+master4 %>% 
+    tabyl(usms_health_care_provider, ethnicity) %>%
+    adorn_totals(where = c("row", "col")) %>% # add row, column totals
+    kable 
+
+chisq.test(master4$usms_health_care_provider, master4$ethnicity)
+
+```
+
+## Facility
+### With NA's
+```{r facility hisp plot, warning = FALSE}
+
+ggplot(data=master4, aes(x = ms_health_care_facility2, fill = ms_health_care_facility2))+
+  geom_bar()+
+  facet_wrap(~ethnicity)+ theme(axis.text.x = element_text(angle = 90))
+
+ggplot(data=master4, aes(x =ethnicity, fill = ethnicity))+
+  geom_bar()+
+  facet_wrap(~ms_health_care_facility2)+ theme(axis.text.x = element_text(angle = 90))
+```
+
+```{r hisp facility, warning = FALSE}
+master4 %>% 
+    tabyl(ethnicity, ms_health_care_facility2) %>%
+    adorn_totals(where = c("row", "col")) %>% # add row, column totals
+    kable 
+
+chisq.test(master4$ethnicity, master4$ms_health_care_facility2)
+```
+
+### Without NA's
+```{r facility hisp plot no na, warning = FALSE}
+
+ggplot(data=master5, aes(x = ms_health_care_facility2, fill = ms_health_care_facility2))+
+  geom_bar()+
+  facet_wrap(~ethnicity)+ theme(axis.text.x = element_text(angle = 90))
+
+ggplot(data=master5, aes(x =ethnicity, fill = ethnicity))+
+  geom_bar()+
+  facet_wrap(~ms_health_care_facility2)+ theme(axis.text.x = element_text(angle = 90))
+```
+
+```{r hisp facility no na, warning = FALSE}
+master5 %>% 
+    tabyl(ethnicity, ms_health_care_facility2) %>%
+    adorn_totals(where = c("row", "col")) %>% # add row, column totals
+    kable 
+
+chisq.test(master5$ethnicity, master5$ms_health_care_facility2)
+```
+
+## Location
+
+```{r location hisp plot , warning = FALSE}
+ggplot(data=master4, aes(x = usms_health_care_location, fill = usms_health_care_location))+
+  geom_bar()+
+  facet_wrap(~ethnicity)+ theme(axis.text.x = element_text(angle = 90))
+
+ggplot(data=master4, aes(x = ethnicity, fill = ethnicity))+
+  geom_bar()+
+  facet_wrap(~usms_health_care_location)+ theme(axis.text.x = element_text(angle = 90))
+```
+
+```{r location hisp, warning = FALSE}
+
+master4 %>% 
+    tabyl(usms_health_care_location, ethnicity) %>%
+    adorn_totals(where = c("row", "col")) %>% # add row, column totals
+    kable 
+
+chisq.test(master4$usms_health_care_location, master4$ethnicity)
+
+```
+
+
+
+
+
+# Summary of $\chi$^2^ Tests
+
+|                    | Race    | US Race | Disability |    Sex   |   MS Type  | Hispanic |
+|--------------------|---------|---------|------------|----------|------------|----------|
+| Facility           | 0.8796  |  0.8796 |  0.7464    |  0.2024  |   0.5672   |  0.08885 |
+| Provider           | 0.9101  |  0.9457 |  0.06418   |  0.4811  | **0.0391** |  0.5267  |
+| Location           | 0.9545  |  0.9445 |  0.2046    |  0.51    |**0.01765** |  0.9825  |
+
+# Session Information
+
+```{r}
+sessioninfo::session_info()
+```
