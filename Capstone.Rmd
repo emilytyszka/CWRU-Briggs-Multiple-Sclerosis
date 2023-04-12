@@ -1,0 +1,2039 @@
+---
+title: "Determining the Effects of Neurological Patient Reported Outcomes on Physical Activity Level among Persons with Multiple Sclerosis"
+author: "Emily Tyszka"
+date: "`r Sys.Date()`"
+linkcolor: blue
+output:
+    rmdformats::readthedown:
+    highlight: kate
+    number_sections: true
+    code_folding: show
+    df_print: paged
+---
+
+# Initial Setup and Package Loads in R 
+```{r package loads, message = FALSE, comment = NA}
+
+library(Epi); library(janitor); library(here); library(readxl); library(magrittr); library(data.table)
+library(writexl); library(haven); library(MASS); library(skimr); library(naniar); 
+library(car); library(base); library(rms); library(broom); library(DescTools); library(pscl);
+library(psych); library(caret); library(GGally); library(plyr); library(knitr); 
+library(lubridate); library(table1); library(tableone); library(mosaic); library(tidyverse) 
+
+```
+
+# Data Preparation
+
+## Load Datasets
+
+```{r load_data, warning = FALSE}
+
+rawsurveys <- read_excel("master.112020.usa.ms.3300.xlsx")
+rawsurveys <- subset(rawsurveys, select = -c(DEMO_AGE))
+
+nrow(rawsurveys)
+
+demosex <- read_excel("report_nina_demographics_baseline_and_longitudinal_elements_allusers.xlsx")
+demosex <- demosex %>% select(ownerId, PatientSex)
+ages <- read_excel("master.age.112020.xlsx")
+ages <- ages %>% select(ownerID, DEMO_AGE)
+
+
+phys <- read_excel("report_Physical_Activity_baseline_2021.02.23_activeusers.xls")
+nrow(phys)
+IDs <- read_excel("et.idsabbrev.xlsx")
+nrow(IDs)
+ht_wt <- read_excel("ht_wt.xlsx")
+nrow(ht_wt)
+
+demosex <- demosex %>% rename("ownerID"="ownerId")
+demosex <- demosex %>% rename("PatientSexComplete"="PatientSex")
+phys <- phys %>% rename("ownerID"="Owner ID")
+IDs <- IDs %>% rename("ownerID"="Ownerid")
+ht_wt <- ht_wt %>% rename("ownerID"="X")
+ages <- ages %>% rename("ownerID"="ownerID")
+
+```
+
+```{r fix_height, warning = FALSE}
+
+ht_wt$PatientHeightInchesTotal <- (ht_wt$PatientHeightFeet*12)+ht_wt$PatientHeightInches
+ht_wt$PatientHeightInchesTotal2 <- (ht_wt$PatientHeightCM*0.393701)
+ht_wt$PatientHeight <- coalesce(ht_wt$PatientHeightInchesTotal, ht_wt$PatientHeightInchesTotal2)
+
+```
+
+
+## Merge Datasets
+
+```{r merge_data, warning = FALSE}
+
+masterraw1.1 <- join(IDs, rawsurveys, by="ownerID")
+masterraw1 <- join(masterraw1.1, demosex, by="ownerID")
+masterraw2 <- join(masterraw1, phys, by="ownerID")
+masterraw3 <- join(masterraw2, ht_wt, by="ownerID")
+
+masterraw <-join(masterraw3, ages, by="ownerID")
+
+colnames(masterraw)[colnames(masterraw) == 'demo _in_30days_phys'] <- 'demo_in_30days_phys'
+summary(masterraw$demo_in_30days_phys==1)
+
+```
+
+
+# Variable Setups
+
+## Dates
+
+```{r dates, warning = FALSE}
+
+masterraw$physical_submission2 <- as.Date(masterraw$physical_submission)
+masterraw$physmonth <- as.factor(month(masterraw$physical_submission2))
+
+masterraw$physmonth <- fct_collapse(masterraw$physmonth,
+  'Spring' = c('3', '4', '5'),
+  'Summer' = c('6', '7', '8'),
+  'Autumn'= c('9', '10', '11'),
+  'Winter' = c('12', '1', '2'))
+
+
+barchart(masterraw$physmonth)
+
+```
+
+## Regions
+
+```{r regions, warning = FALSE}
+
+masterraw$ParticipantStateReside <- as.factor(masterraw$ParticipantStateReside)
+
+barchart(masterraw$ParticipantStateReside)
+
+# Collapsed based on "Census Bureau-designated regions and divisions"
+
+masterraw$region <- fct_collapse(masterraw$ParticipantStateReside,
+  'Northeast' = c('Connecticut', 'Maine', 'Massachusetts', 'NewHampshire', 'RhodeIsland', 
+                  'Vermont', 'NewJersey', 'NewYork', 'Pennsylvania'),
+  'Midwest' = c('Illinois', 'Indiana', 'Michigan', 'Ohio', 'Wisconsin', 'Iowa', 'Kansas', 
+                'Minnesota', 'Missouri', 'Nebraska', 'NorthDakota', 'SouthDakota'),
+  'South'= c('Delaware', 'Florida', 'Georgia', 'Maryland', 'NorthCarolina', 'NC', 
+             'SouthCarolina', 'Virginia', 'DC', 'WestVirginia', 'Alabama', 'Kentucky', 
+             'Mississippi', 'Tennessee','Arkansas', 'Louisiana', 'Oklahoma', 'Texas'),
+  'West' = c('Arizona', 'Colorado', 'Idaho', 'Montana', 'Nevada', 'NewMexico', 'Utah', 
+                 'Wyoming','Alaska', 'California', 'Hawaii', 'Oregon', 'Washington'))
+
+barchart(masterraw$region)
+
+```
+
+## Race
+
+```{r race, warning = FALSE}
+
+masterraw$USRace2 <- as.factor(masterraw$USRace)
+
+masterraw$USRace2 <- fct_collapse(masterraw$USRace2,
+    'Other' = c('Multiracial', 'MiddleEastern', 'DK', 'Asian', 'AI/NH'),
+    'Black' = 'Black',
+    'White' = 'White')
+
+masterraw$USRace2 <- relevel(masterraw$USRace2, ref = 'White')
+
+summary(masterraw$USRace2)
+
+```
+## Sex
+
+```{r sex, warning = FALSE}
+
+masterraw$PatientSexComplete <- as.factor(masterraw$PatientSexComplete)
+
+masterraw$PatientSexComplete <- fct_collapse(masterraw$PatientSexComplete,
+    NULL = c('Other', 'PreferNotAnswer', NULL),
+    'F' = 'F',
+    'M' = 'M')
+
+masterraw$PatientSexComplete <- relevel(masterraw$PatientSexComplete, ref = 'F')
+
+summary(masterraw$PatientSexComplete)
+
+```
+
+## Physical Activity
+
+```{r rename, warning = FALSE}
+
+colnames(masterraw)[colnames(masterraw) == 'Strenuous Exercise (heart beats rapidly) (e.g., running, jogging, hockey, football, soccer, squash, basketball, cross country skiing, judo, roller skating, vigorous swimming, vigorous long distance bicycling) (StrenuousExercise)'] <- 'strenuous'
+colnames(masterraw)[colnames(masterraw) == 'Moderate Exercise (not exhausting) (e.g., fast walking, baseball, tennis, easy bicycling, volleyball, badminton, easy swimming, alpine skiing, popular and folk dancing) (ModerateExercise)'] <- 'moderate'
+colnames(masterraw)[colnames(masterraw) == 'Mild Exercise (minimal effort) (e.g. yoga, archery, fishing from river bank, bowling, horseshoes, golf, easy walking) (MildExercise)'] <- 'mild'
+
+```
+
+### Numeric
+``` {r numeric_exercise, warning = FALSE}
+
+masterraw$strenuous <- as.numeric(masterraw$strenuous)
+masterraw$moderate <- as.numeric(masterraw$moderate)
+masterraw$mild <- as.numeric(masterraw$mild)
+
+
+summary(masterraw$strenuous)
+summary(masterraw$moderate)
+summary(masterraw$mild)
+
+masterraw$allphyssum <- masterraw$strenuous + masterraw$moderate + masterraw$mild
+
+histogram(masterraw$allphyssum, breaks = 43)
+
+summary(masterraw$allphyssum)
+
+```
+
+### Binary
+```{r make_yes_no, warning = FALSE}
+
+masterraw$anystrenuous <- as.factor(masterraw$strenuous)
+masterraw$anystrenuous <- fct_collapse(masterraw$anystrenuous,
+  '0' = '0',
+  '1' = c('1', '2','3','4','5','6','7','8','9','10','11','12'))
+summary(masterraw$anystrenuous)
+
+masterraw$anymoderate <- as.factor(masterraw$moderate)
+masterraw$anymoderate <- fct_collapse(masterraw$anymoderate,
+  '0' = '0',
+  '1' = c('1', '2','3','4','5','6','7','8','9','10','11','12','13','14','15','18','21','28'))
+summary(masterraw$anymoderate)
+
+masterraw$anymild <- as.factor(masterraw$mild)
+masterraw$anymild <- fct_collapse(masterraw$anymild,
+  '0' = '0',
+  '1' = c('1', '2','3','4','5','6','7','8','9','10','11','12','13','14','15','16','17','18','19','20','21', '25','35'))
+summary(masterraw$anymild)
+
+
+masterraw$ten <- as.factor(masterraw$mild)
+masterraw$ten <- fct_collapse(masterraw$ten,
+  '0' = c('0','1', '2','3','4','5','6'),
+  '1' = c('7','8','9','10','11','12','13','14','15','16','17','18','19','20','21', '25','35'))
+summary(masterraw$ten)
+
+```
+
+### Make "At Least" Variables
+
+```{r at least variables, warning = FALSE}
+
+masterraw$mildplus <- as.numeric(as.character(masterraw$anymild)) + as.numeric(as.character(masterraw$anymoderate)) + as.numeric(as.character(masterraw$anystrenuous))
+masterraw$mildplus <- as.factor(masterraw$mildplus)
+masterraw$mildplus <- fct_collapse(masterraw$mildplus,
+  '0' = '0',
+  '1' = c('1', '2','3'))
+summary(masterraw$mildplus)
+
+masterraw$modplus <- as.numeric(as.character(masterraw$anymoderate)) + as.numeric(as.character(masterraw$anystrenuous))
+masterraw$modplus <- as.factor(masterraw$modplus)
+masterraw$modplus <- fct_collapse(masterraw$modplus,
+  '0' = '0',
+  '1' = c('1', '2'))
+summary(masterraw$modplus)
+
+masterraw$strenplus <- masterraw$anystrenuous
+summary(masterraw$anystrenuous)
+
+
+```
+
+
+### Recommended Weekly Exercise
+
+https://my.clevelandclinic.org/departments/neurological/depts/multiple-sclerosis/ms-approaches/exercise-in-ms - PwMS are recommended to get aerobic exercise at least 3-4 days per week (NCHPAD Guidelines), so let's set it at 4 times as a "minimum" recommended.
+
+```{r minimum_recommended, warning = FALSE}
+
+masterraw$recommendedphys <- as.factor(masterraw$allphyssum)
+masterraw$recommendedphys <- fct_collapse(masterraw$recommendedphys,
+  'Below Recommended' = c('0','1', '2','3'),
+  'Meet Recommended' = c('4','5','6','7','8','9','10','11','12', '13', '14','15','16','17','18','19','20',
+                         '21','22', '23', '24','25','26','27','28','29','30','31','32', '33','35','42','43'))
+
+summary(masterraw$recommendedphys)
+
+
+```
+
+
+## Neuro-QoL
+```{r neuro-qol_t_scores, warning = FALSE}
+
+
+# Communication Short Form (NO T-SCORE)
+masterraw$communication <- masterraw$NQCOG01 + masterraw$NQCOG04 + masterraw$NQCOG08 + masterraw$NQCOG10 + masterraw$NQCOG11
+
+
+# Anxiety Short Form
+masterraw$anxiety <- masterraw$EDANX53 + masterraw$EDANX46 + masterraw$EDANX48 + masterraw$EDANX41 + masterraw$EDANX54 + masterraw$EDANX55 + masterraw$NQANX09 + masterraw$NQANX07
+masterraw$anxietyT <- as.factor(masterraw$anxiety)
+masterraw$anxietyT <- recode_factor(masterraw$anxiety, '8' = '36.4', '9' = '42.1', '10'= '44.3', '11' = '45.9', 
+                                '12' = '47.3', '13' = '48.4', '14' = '49.5', '15' = '50.5', '16' = '51.4',
+                                '17' = '52.3', '18' = '53.3', '19' = '54.2', '20'= '55.0', '21' = '55.9',
+                                '22' = '56.8', '23' = '57.6', '24' = '58.4', '25' = '59.3', '26' = '60.1',
+                                '27' = '60.9', '28' = '61.8', '29' = '62.6', '30'= '63.4', '31' = '64.2',
+                                '32' = '65.1', '33' = '65.9', '34' = '66.8', '35' = '67.8', '36' = '68.9',
+                                '37' = '70.0', '38' = '71.5', '39' = '73.3', '40' = '76.8')
+masterraw$anxietyT <- as.numeric(masterraw$anxiety)
+histogram(masterraw$anxietyT)
+
+
+# Depression Short Form
+masterraw$depression <- masterraw$EDDEP29 + masterraw$EDDEP41 + masterraw$EDDEP09 + masterraw$EDDEP48 + masterraw$EDDEP04 +
+  masterraw$EDDEP36 + masterraw$EDDEP39 + masterraw$EDDEP45
+masterraw$depressionT <- as.factor(masterraw$depression)
+masterraw$depressionT <- recode_factor(masterraw$depressionT, '8' = '36.9', '9' = '43.1', '10'= '45.3', '11' = '46.8', 
+                                '12' = '47.9', '13' = '48.9', '14' = '49.8', '15' = '50.6', '16' = '51.3',
+                                '17' = '52.1', '18' = '52.8', '19' = '53.6', '20'= '54.3', '21' = '55.1',
+                                '22' = '55.9', '23' = '56.7', '24' = '57.4', '25' = '58.2', '26' = '59.0',
+                                '27' = '59.8', '28' = '60.6', '29' = '61.4', '30'= '62.2', '31' = '63.0',
+                                '32' = '63.8', '33' = '64.6', '34' = '65.4', '35' = '66.3', '36' = '67.3',
+                                '37' = '68.3', '38' = '69.6', '39' = '71.3', '40' = '75.0')
+masterraw$depressionT <- as.numeric(masterraw$depressionT)
+
+
+# Fatigue Short Form
+masterraw$fatigue <- masterraw$NQFTG13 + masterraw$NQFTG11 + masterraw$NQFTG15 + masterraw$NQFTG06 + masterraw$NQFTG07 +
+  masterraw$NQFTG10 + masterraw$NQFTG14 + masterraw$NQFTG02 
+masterraw$fatigueT <- as.factor(masterraw$fatigue)
+masterraw$fatigueT <- recode_factor(masterraw$fatigueT, '8' = '29.5', '9' = '34.1', '10'= '36.5', '11' = '38.2', 
+                                '12' = '39.5', '13' = '40.7', '14' = '41.8', '15' = '42.8', '16' = '43.8',
+                                '17' = '44.7', '18' = '45.6', '19' = '46.5', '20'= '47.4', '21' = '48.4',
+                                '22' = '49.3', '23' = '50.3', '24' = '51.3', '25' = '52.3', '26' = '53.3',
+                                '27' = '54.4', '28' = '55.4', '29' = '56.5', '30'= '57.6', '31' = '58.8',
+                                '32' = '59.9', '33' = '61.1', '34' = '62.3', '35' = '63.5', '36' = '64.8',
+                                '37' = '66.2', '38' = '67.9', '39' = '70.1', '40' = '74.1')
+masterraw$fatigueT <- as.numeric(masterraw$fatigueT)
+
+
+# Upper Extremity Function Short Form
+masterraw$upperex <- masterraw$PFA40 + masterraw$PFA50 + masterraw$NQUEX44 + masterraw$PFB21 + masterraw$PFA43 +
+  masterraw$PFA35 + masterraw$PFA55 + masterraw$PFB26 
+masterraw$upperexT <- as.factor(masterraw$upperex)
+masterraw$upperexT <- recode_factor(masterraw$upperexT, '8' = '12.8', '9' = '13.7', '10'= '14.7', '11' = '15.8', 
+                                '12' = '16.8', '13' = '18.0', '14' = '19.0', '15' = '19.9', '16' = '20.8',
+                                '17' = '21.6', '18' = '22.4', '19' = '23.1', '20'= '23.9', '21' = '24.6',
+                                '22' = '25.3', '23' = '26.0', '24' = '26.7', '25' = '27.3', '26' = '28.0',
+                                '27' = '28.7', '28' = '29.5', '29' = '30.2', '30'= '30.9', '31' = '31.7',
+                                '32' = '32.6', '33' = '33.5', '34' = '34.5', '35' = '35.6', '36' = '37.1',
+                                '37' = '39.3', '38' = '41.2', '39' = '43.7', '40' = '53.8')
+masterraw$upperexT <- as.numeric(masterraw$upperexT)
+
+
+# Lower Extremity Function Short Form
+masterraw$lowerex <- masterraw$PFC45 + masterraw$PFA30+ masterraw$PFA56 + masterraw$PFA45 + masterraw$PFA12 +
+  masterraw$PFA53 + masterraw$PFA31 + masterraw$PFA31 
+masterraw$lowerexT <- as.factor(masterraw$lowerex)
+masterraw$lowerexT <- recode_factor(masterraw$lowerexT, '8' = '16.5', '9' = '19.2', '10'= '21.1', '11' = '22.6', 
+                                '12' = '23.9', '13' = '25.1', '14' = '26.2', '15' = '27.2', '16' = '28.1',
+                                '17' = '29.0', '18' = '29.9', '19' = '30.7', '20'= '31.5', '21' = '32.2',
+                                '22' = '33.0', '23' = '33.7', '24' = '34.5', '25' = '35.2', '26' = '36.0',
+                                '27' = '36.7', '28' = '37.5', '29' = '38.3', '30'= '39.1', '31' = '39.9',
+                                '32' = '40.8', '33' = '41.7', '34' = '42.8', '35' = '43.9', '36' = '45.2',
+                                '37' = '46.7', '38' = '48.6', '39' = '51.2', '40' = '58.6')
+masterraw$lowerexT <- as.numeric(masterraw$lowerexT)
+
+
+# Cognitive Function Short Form
+masterraw$cognitive <- masterraw$NQCOG64 + masterraw$NQCOG75 + masterraw$NQCOG77 + masterraw$NQCOG80 + masterraw$NQCOG22 +
+  masterraw$NQCOG24 + masterraw$NQCOG25 + masterraw$NQCOG40 
+masterraw$cognitiveT <- as.factor(masterraw$cognitive)
+masterraw$cognitiveT <- recode_factor(masterraw$cognitiveT, '8' = '17.3', '9' = '20.4', '10'= '22.6', '11' = '24.4', 
+                                '12' = '25.9', '13' = '27.3', '14' = '28.6', '15' = '29.8', '16' = '30.9',
+                                '17' = '32.0', '18' = '33.0', '19' = '34.0', '20'= '35.0', '21' = '36.0',
+                                '22' = '37.0', '23' = '37.9', '24' = '38.9', '25' = '39.9', '26' = '40.9',
+                                '27' = '41.9', '28' = '42.9', '29' = '43.9', '30'= '44.9', '31' = '46.0',
+                                '32' = '47.1', '33' = '48.3', '34' = '49.6', '35' = '50.9', '36' = '52.4',
+                                '37' = '54.2', '38' = '56.3', '39' = '59.0', '40' = '64.2')
+masterraw$cognitiveT <- as.numeric(masterraw$cognitiveT)
+
+
+# Emotional and Behavioral Dyscontrol Short Form
+masterraw$ebdys <- masterraw$EDANG42 + masterraw$NQPER05 + masterraw$NQPER06 + masterraw$NQPER07 + masterraw$NQPER11 +
+  masterraw$NQPER12 + masterraw$NQPER17 + masterraw$NQPER19 
+masterraw$ebdysT <- as.factor(masterraw$ebdys)
+masterraw$ebdysT <- recode_factor(masterraw$ebdysT, '8' = '32.2', '9' = '37.2', '10'= '39.9', '11' = '42.0', 
+                                '12' = '43.7', '13' = '45.3', '14' = '46.7', '15' = '48.1', '16' = '49.4',
+                                '17' = '50.7', '18' = '52.0', '19' = '53.2', '20'= '54.5', '21' = '55.8',
+                                '22' = '57.0', '23' = '58.3', '24' = '59.6', '25' = '60.8', '26' = '62.1',
+                                '27' = '63.3', '28' = '64.5', '29' = '65.8', '30'= '66.9', '31' = '68.1',
+                                '32' = '69.3', '33' = '70.6', '34' = '71.8', '35' = '73.1', '36' = '74.5',
+                                '37' = '76.0', '38' = '77.7', '39' = '79.8', '40' = '82.6')
+masterraw$ebdysT <- as.numeric(masterraw$ebdysT)
+
+
+
+# Positive Affect and Well-Being Short Form
+masterraw$pos <- masterraw$NQPPF14 + masterraw$NQPPF12 + masterraw$NQPPF15 + masterraw$NQPPF20 + masterraw$NQPPF17 +
+  masterraw$NQPPF22 + masterraw$NQPPF19 + masterraw$NQPPF16 + masterraw$NQPPF07
+masterraw$posT <- as.factor(masterraw$pos)
+masterraw$posT <- recode_factor(masterraw$posT,'9' = '26.3', '10'= '30.2', '11' = '32.0', '12' = '33.3', 
+                             '13' = '34.3', '14' = '35.3', '15' = '36.1', '16' = '37.0','17' = '37.8', 
+                             '18' = '38.6', '19' = '39.4', '20' = '40.2', '21' = '41.1', '22' = '41.8', 
+                             '23' = '42.7', '24' = '43.5', '25' = '44.4', '26' = '45.3', '27' = '46.3', 
+                             '28' = '47.2', '29' = '48.1', '30' = '49.0', '31' = '49.9', '32' = '50.7', 
+                             '33' = '51.5', '34' = '52.3', '35' = '53.2', '36' = '54.0', '37' = '54.9', 
+                             '38' = '55.8', '39' = '56.8', '40' = '57.8', '41' = '58.8', '42' = '59.9', 
+                             '43' = '61.3', '44' = '63.3', '45' = '68.0')
+masterraw$posT <- as.numeric(masterraw$posT)
+
+
+# Sleep Disturbance Short Form
+masterraw$sleep <- masterraw$NQSLP02 + masterraw$NQSLP03 + masterraw$NQSLP04 + masterraw$NQSLP05 + masterraw$NQSLP07 +
+  masterraw$NQSLP12 + masterraw$NQSLP13 + masterraw$NQSLP18 
+masterraw$sleepT <- as.factor(masterraw$sleep)
+masterraw$sleepT <- recode_factor(masterraw$sleepT, '8' = '32.0', '9' = '36.3', '10'= '39.1', '11' = '41.7', 
+                                '12' = '43.8', '13' = '45.6', '14' = '47.3', '15' = '48.9', '16' = '50.4',
+                                '17' = '51.8', '18' = '53.1', '19' = '54.4', '20'= '55.6', '21' = '56.8',
+                                '22' = '58.0', '23' = '59.2', '24' = '60.4', '25' = '61.6', '26' = '62.8',
+                                '27' = '63.9', '28' = '65.1', '29' = '66.4', '30'= '67.6', '31' = '68.9',
+                                '32' = '70.3', '33' = '71.7', '34' = '73.2', '35' = '74.7', '36' = '76.4',
+                                '37' = '78.2', '38' = '80.2', '39' = '82.2', '40' = '84.2')
+masterraw$sleepT <- as.numeric(masterraw$sleepT)
+
+
+# Ability to Participate in Social Roles Short Form
+masterraw$socialability <- masterraw$NQPRF01 + masterraw$NQPRF03 + masterraw$NQPRF08 + masterraw$NQPRF09 + masterraw$NQPRF17 +
+  masterraw$NQPRF26 + masterraw$NQPRF32 + masterraw$NQPRF34 
+masterraw$socialabilityT <- as.factor(masterraw$socialability)
+masterraw$socialabilityT <- recode_factor(masterraw$socialabilityT, '8' = '24.1', '9' = '27.7', '10'= '29.5', '11' = '30.8',
+                                '12' = '31.8', '13' = '32.7', '14' = '33.5', '15' = '34.3', '16' = '35.0',
+                                '17' = '35.7', '18' = '36.4', '19' = '37.1', '20'= '37.8', '21' = '38.5',
+                                '22' = '39.2', '23' = '39.9', '24' = '40.6', '25' = '41.3', '26' = '42.0',
+                                '27' = '42.7', '28' = '43.4', '29' = '44.0', '30'= '44.7', '31' = '45.4',
+                                '32' = '46.1', '33' = '46.8', '34' = '47.5', '35' = '48.3', '36' = '49.2',
+                                '37' = '50.2', '38' = '51.6', '39' = '53.4', '40' = '60.2')
+masterraw$socialabilityT <- as.numeric(masterraw$socialabilityT)
+
+
+# Satisfaction with Social Roles and Activities Short Form
+masterraw$socsat <- masterraw$NQSAT03 + masterraw$NQSAT23 + masterraw$NQSAT14 + masterraw$NQSAT11 + masterraw$SRPSAT33 +
+  masterraw$SRPSAT05 + masterraw$SRPSAT07 + masterraw$NQSAT46 
+masterraw$socsatT <- as.factor(masterraw$socsat)
+masterraw$socsatT <- recode_factor(masterraw$socsatT, '8' = '28.4', '9' = '32.6', '10'= '34.0', '11' = '35.1', 
+                                '12' = '35.9', '13' = '36.7', '14' = '37.4', '15' = '38.0', '16' = '38.6',
+                                '17' = '39.1', '18' = '39.7', '19' = '40.2', '20'= '40.7', '21' = '40.7',
+                                '22' = '41.7', '23' = '42.2', '24' = '42.7', '25' = '43.2', '26' = '43.7',
+                                '27' = '44.2', '28' = '44.7', '29' = '45.2', '30'= '45.8', '31' = '46.3',
+                                '32' = '46.9', '33' = '47.5', '34' = '48.2', '35' = '48.9', '36' = '49.8',
+                                '37' = '50.7', '38' = '52.0', '39' = '53.7', '40' = '60.5')
+masterraw$socsatT <- as.numeric(masterraw$socsatT)
+
+
+# Stigma Short Form
+masterraw$stigma <- masterraw$NQSTG02+ masterraw$NQSTG04 + masterraw$NQSTG08 + masterraw$NQSTG16 + masterraw$NQSTG01 +
+  masterraw$NQSTG17 + masterraw$NQSTG05 + masterraw$NQSTG21 
+masterraw$stigmaT <- as.factor(masterraw$stigma)
+masterraw$stigmaT <- recode_factor(masterraw$stigmaT, '8' = '39.2', '9' = '45.7', '10'= '47.6', '11' = '49.3', 
+                                '12' = '50.6', '13' = '51.7', '14' = '52.8', '15' = '53.7', '16' = '54.6',
+                                '17' = '55.4', '18' = '56.2', '19' = '57.0', '20'= '57.8', '21' = '58.5',
+                                '22' = '59.3', '23' = '60.1', '24' = '60.8', '25' = '61.6', '26' = '62.4',
+                                '27' = '63.2', '28' = '64.0', '29' = '64.8', '30' = '65.7', '31' = '66.6',
+                                '32' = '67.5', '33' = '68.5', '34' = '69.6', '35' = '70.8', '36' = '72.2',
+                                '37' = '73.7', '38' = '75.6', '39' = '78.1', '40' = '81.5')
+masterraw$stigmaT <- as.numeric(masterraw$stigmaT)
+
+
+```
+
+## MS Type
+
+```{r ms type, warning = FALSE}
+
+masterraw$MSbestcharacterizes <- as.factor(masterraw$MSbestcharacterizes)
+
+masterraw$MSbestcharacterizes <- fct_collapse(masterraw$MSbestcharacterizes,
+  NULL = c(NA, '99', 'Missing', 'NULL'),
+  'CIS/RIS' = c('CIS', 'ris'),
+  'SPMS' = 'spms',
+  'PPMS' = 'ppms',
+  'RRMS' = 'rrms')
+
+masterraw$MSbestcharacterizes <- fct_explicit_na(masterraw$MSbestcharacterizes, na_level = "Missing")
+
+masterraw$MSbestcharacterizes <- relevel(masterraw$MSbestcharacterizes, ref='RRMS')
+
+barchart(masterraw$MSbestcharacterizes)
+
+
+```
+
+## Employment
+
+```{r employment, warning = FALSE}
+
+masterraw$EmployStatus <- as.factor(masterraw$EmployStatus)
+
+masterraw$EmployStatus <- fct_explicit_na(masterraw$EmployStatus, na_level = "Missing")
+
+masterraw$EmployStatus <- fct_collapse(masterraw$EmployStatus,
+  'Unemployed' = c('UnemployedNotLooking', 'Unemployed', 'Homemaker', 'Retired'),
+  'Employed' = c('EmployedOutside','EmployedHome'),
+  'Disabled' = c('Disabled', 'WorkmensComp'),
+  'Missing' = c('PreferNotAnswer', 'Missing', NULL, NA))
+
+masterraw$EmployStatus <- fct_explicit_na(masterraw$EmployStatus, na_level = "Missing")
+
+masterraw$EmployStatus <- relevel(masterraw$EmployStatus, ref='Employed')
+
+barchart(masterraw$EmployStatus)
+
+```
+
+
+## BMI
+
+```{r bmi, warning = FALSE}
+
+BMI <- read_excel("CohortFebNBnew.xlsx")
+BMI <- BMI %>% select(X, BMI)
+
+BMI <- BMI %>% rename("bminum"="BMI")
+BMI <- BMI %>% rename("ownerID"="X")
+
+masterraw <-join(masterraw, BMI, by="ownerID")
+
+
+masterraw$bmi <- cut(masterraw$bminum, breaks = c(0, 18.5, 25, 30, 100),
+    labels =c("Underweight","Normal","Overweight","Obese"))
+
+masterraw$bmi <- fct_explicit_na(masterraw$bmi, na_level = "Missing")
+
+masterraw$bmi <- relevel(masterraw$bmi, ref='Normal')
+
+summary(masterraw$bmi)
+summary(masterraw$bminum)
+  
+```
+
+
+## Other Variables
+
+```{r misc_variables, warning = FALSE}
+
+masterraw$USRace <- as.factor(masterraw$USRace)
+barchart(masterraw$USRace)
+
+histogram(masterraw$DEMO_AGE)
+
+masterraw$PDDS <- as.numeric(masterraw$PDDS)
+histogram(masterraw$PDDS)
+
+masterraw$PatientSexComplete <- as.factor(masterraw$PatientSexComplete)
+
+```
+
+
+
+# Export File
+```{r export, warning = FALSE}
+
+masterraw$fullNeuroQoL <- complete.cases(masterraw$cognitiveT)
+master <- masterraw %>% filter(`demo_in_30days_phys`=="1")
+master <- master %>% filter(`fullNeuroQoL`=='TRUE')
+                            
+write_xlsx(master, "ETCapstoneData.xlsx") 
+write_xlsx(masterraw, "ETCapstoneDataRaw.xlsx") 
+
+```
+
+# Table 1
+
+## Overall Population
+```{r table 1, warning = FALSE}
+
+t1.vars <- c("DEMO_AGE", "USRace2", "season", "region", "physmonth", "MSbestcharacterizes", "lowerexT", "PatientSexComplete", "bmi", "allphyssum", "recommendedphys", "mildplus", "cognitiveT", "posT", "depressionT")
+
+(overallt1 <- CreateTableOne(data = master,
+                          vars = t1.vars))
+
+print.t1 <- print(overallt1, quote = FALSE,
+               noSpaces = TRUE, printToggle = FALSE)
+
+write.csv(print.t1, file = "t1.csv")
+
+```
+
+## By Race 
+```{r table 1 race, warning = FALSE}
+
+(racet1 <- CreateTableOne(data = master,
+                          vars = t1.vars,
+                          strata = c("USRace2")))
+
+print.racet1 <- print(racet1, quote = FALSE,
+               noSpaces = TRUE, printToggle = FALSE)
+
+write.csv(print.racet1, file = "racet1.csv")
+
+```
+## My Sample vs. Whole Sample
+
+```{r table 1 with 30 days phys, warning = FALSE}
+
+masterraw$demo_in_30days_phys[is.na(masterraw$demo_in_30days_phys)] <- 0
+masterraw$fullNeuroQoL[is.na(masterraw$fullNeuroQoL)] <- 0
+
+masterraw$fullNeuroQoL <- as.numeric(masterraw$fullNeuroQoL)
+masterraw$demo_in_30days_phys <- as.numeric(masterraw$demo_in_30days_phys)
+masterraw$wholesample <- masterraw$demo_in_30days_phys + masterraw$fullNeuroQoL
+
+masterraw$demo_in_30days_phys <- as.factor(masterraw$demo_in_30days_phys)
+masterraw$fullNeuroQoL <- as.factor(masterraw$fullNeuroQoL)
+masterraw$wholesample <- as.factor(masterraw$wholesample)
+summary(masterraw$wholesample)
+masterraw$wholesample <- fct_collapse(masterraw$wholesample,
+  '0' = c('0', '1'),
+  '1' ='2')
+summary(masterraw$wholesample)
+
+t1.vars <- c("DEMO_AGE", "USRace2", "MSbestcharacterizes", "lowerexT", "PatientSexComplete", "bminum", "allphyssum", "cognitiveT", "posT", "depressionT")
+
+(t1.30days <- CreateTableOne(data = masterraw,
+                          vars = t1.vars,
+                          strata = "wholesample"))
+
+print.t1.30days <- print(t1.30days, quote = FALSE,
+               noSpaces = TRUE, printToggle = FALSE)
+
+write.csv(print.t1.30days, file = "30dayt1.csv")
+
+```
+
+SPMS - take more breaks in filling out survey
+
+### Tests of Variables of Interest
+
+#### Age 
+```{r age, warning = FALSE}
+
+by(masterraw$DEMO_AGE, masterraw$wholesample, mosaic::favstats)
+anova(lm(DEMO_AGE ~ wholesample, data = masterraw))
+
+```
+
+#### Race 
+```{r race, warning = FALSE}
+
+masterraw %>% 
+    tabyl(wholesample,USRace2) %>%
+    adorn_totals(where = c("row", "col")) %>% # add row,
+    kable 
+
+chisq.test(masterraw$wholesample, masterraw$USRace2)
+```
+#### Subtype 
+```{r subtype, warning = FALSE}
+
+masterraw %>% 
+    tabyl(wholesample, MSbestcharacterizes) %>%
+    adorn_totals(where = c("row", "col")) %>% # add row,
+    kable 
+
+chisq.test(masterraw$wholesample, masterraw$MSbestcharacterizes)
+```
+
+#### Sex 
+```{r sex, warning = FALSE}
+
+masterraw %>% 
+    tabyl(wholesample, PatientSexComplete) %>%
+    adorn_totals(where = c("row", "col")) %>% # add row,
+    kable 
+
+chisq.test(masterraw$wholesample, masterraw$PatientSexComplete)
+```
+
+#### BMI 
+```{r BMI, warning = FALSE}
+
+masterraw %>% 
+    tabyl(wholesample, bmi) %>%
+    adorn_totals(where = c("row", "col")) %>% # add row,
+    kable 
+
+chisq.test(masterraw$wholesample, masterraw$bmi)
+
+by(masterraw$bminum, masterraw$wholesample, mosaic::favstats)
+anova(lm(bminum ~ wholesample, data = masterraw))
+
+```
+#### Count of Physical Activity 
+```{r phys count, warning = FALSE}
+
+by(masterraw$allphyssum, masterraw$wholesample, mosaic::favstats)
+anova(lm(allphyssum ~ wholesample, data = masterraw))
+
+```
+#### Lower Extremity Function
+```{r lowerex anova, warning = FALSE}
+
+by(masterraw$lowerexT, masterraw$wholesample, mosaic::favstats)
+anova(lm(lowerexT ~ wholesample, data = masterraw))
+
+```
+#### Cognitive Function
+```{r cog anova, warning = FALSE}
+
+by(masterraw$cognitiveT, masterraw$wholesample, mosaic::favstats)
+anova(lm(cognitiveT ~ wholesample, data = masterraw))
+
+```
+
+#### Positive Affect
+```{r pos anova, warning = FALSE}
+
+by(masterraw$posT, masterraw$wholesample, mosaic::favstats)
+anova(lm(posT ~ wholesample, data = masterraw))
+
+```
+
+#### Depression
+```{r depression anova, warning = FALSE}
+
+by(masterraw$depressionT, masterraw$wholesample, mosaic::favstats)
+anova(lm(depressionT ~ wholesample, data = masterraw))
+
+```
+
+# Which type of model to use?
+
+## Graphing the Outcome
+```{r model selection graphs, warning = FALSE}
+
+ggplot(master, aes(x=allphyssum)) + 
+  geom_histogram(binwidth=1, color="black", fill="darkorange") + 
+  ggtitle("Distribution of Weekly Exercise Count") +
+  theme_bw() + xlab("Weekly Instances of Exercise") + 
+  ylab("Count")
+  ggsave("physsum.png")
+
+summary(master$allphyssum)
+master$physcat <- as.factor(master$allphyssum)
+master$physcat <- fct_collapse(master$physcat,
+  'O' = '0',
+  '1-3' = c('1', '2','3'),
+  '4+' = c('4','5','6','7','8','9','10','11','12', '13', '14','15','16','17','18','19','20',
+                         '21','22', '23', '24','25','26','27','28','29','30','31','32', '33'))
+summary(master$physcat)
+
+df <- data.frame(
+  group = c("0 Sessions", "1-3 Sessions", "4+ Sessions"),
+  value = c(107, 138, 395)
+  )
+
+(pie <- ggplot(df, aes(x="", y=value, fill=group)) +
+  geom_bar(stat="identity", width=1) +
+  coord_polar("y", start=0) + theme_void() +geom_text(aes(label = paste0(value)), position = position_stack(vjust = 0.5)) + labs(x = NULL, y = NULL, fill = NULL, title = "Weekly Exercise Counts Among Study Population") + scale_fill_brewer(palette="Oranges"))
+ggsave("physcat.jpg")
+
+
+
+
+```
+## Negative binomial vs. poisson
+
+```{r model selection, warning = FALSE}
+
+negb <- glm.nb(allphyssum ~ physmonth + region + USRace2 + bmi + PatientSexComplete + MSbestcharacterizes + DEMO_AGE + lowerexT + EmployStatus + cognitiveT + posT + depressionT, data = master)
+poisson <- glm(allphyssum ~ physmonth + region + USRace2 + bmi + PatientSexComplete + MSbestcharacterizes + DEMO_AGE + lowerexT + EmployStatus + cognitiveT + posT + depressionT, data = master, family = "poisson")
+
+repnegb <- glance(negb) %>% mutate(name = "Negative Binomial")
+reppoisson <- glance(poisson) %>% mutate(name = "Poisson")
+
+fit_report <- bind_rows(repnegb, reppoisson)
+
+fit_report %>% 
+    select(name, AIC, BIC, nobs, df.res = df.residual) %>%
+    kable(digits = c(0,4,4,3,0,0,0,0,0)) 
+
+```
+The negative binomial models look better
+
+
+## Zero inflated vs Not
+```{r model selection 2, warning = FALSE}
+
+zeroninflnegb <- pscl::zeroinfl(allphyssum ~ physmonth + region + USRace2 + bmi + PatientSexComplete + MSbestcharacterizes + DEMO_AGE + lowerexT + 
+                                  EmployStatus + cognitiveT + posT + depressionT, dist = "negbin", data = master)
+vuong(negb, zeroninflnegb)
+
+
+```
+
+For 2 of the 3 statistics, we find the zero inflated negative binomial to be better - the raw and AIC-corrected Vuong tests favor the negative binomial, but not  the BIC-corrected test.
+
+We will opt to go for the zero-inflated negative binomial
+
+
+# Outcome as a Numeric - Zero inflated Negative Binomial
+## All 3 Short Forms
+
+```{r kitchen sink numeric, warning = FALSE}
+
+## T Score
+ksmodelT <- pscl::zeroinfl(allphyssum ~ physmonth + region + USRace2 + bmi + PatientSexComplete + MSbestcharacterizes + DEMO_AGE + lowerexT + EmployStatus + cognitiveT + posT + depressionT, dist = "negbin", data = master)
+summary(ksmodelT)
+
+
+## Raw Score
+ksmodel <- pscl::zeroinfl(allphyssum ~ physmonth + region + USRace2 + bmi +  PatientSexComplete + MSbestcharacterizes + DEMO_AGE + lowerex + EmployStatus + cognitive + pos + depression, dist = "negbin", data = master)
+summary(ksmodel)
+
+```
+## Kitchen Sink Minus Employment and Positive Affect
+
+```{r kitchen minus sink numeric, warning = FALSE}
+
+## T Score
+ksminusmodelT <- pscl::zeroinfl(allphyssum ~ physmonth + region + USRace2 + bmi + PatientSexComplete + MSbestcharacterizes + DEMO_AGE + lowerexT + cognitiveT + depressionT, dist = "negbin", data = master)
+(ksminusmodelTOR <- exp(cbind(OR = (coef(ksminusmodelT)), (confint(ksminusmodelT)))))
+write.csv(ksminusmodelTOR, file = "ksminusmodelTOR.csv")
+(ksminusmodelTORinv <- exp(cbind(OR = (-1*coef(ksminusmodelT)), (-1*confint(ksminusmodelT)))))
+write.csv(ksminusmodelTORinv, file = "ksminusmodelTORinv.csv")
+summary(ksminusmodelT)
+
+## Raw Score
+ksminusmodel <- pscl::zeroinfl(allphyssum ~ physmonth + region + USRace2 + bmi +PatientSexComplete + MSbestcharacterizes + DEMO_AGE + lowerex + cognitive + depression, dist = "negbin", data = master)
+
+```
+
+
+## Cognitive
+```{r cognitive numeric, warning = FALSE}
+
+## T Score
+cognitiveT <- pscl::zeroinfl(allphyssum ~ physmonth + region + USRace2 + bmi + PatientSexComplete + MSbestcharacterizes + DEMO_AGE + lowerexT + EmployStatus + cognitiveT, dist = "negbin", data = master)
+summary(cognitiveT)
+
+## Raw Score
+cognitive <- pscl::zeroinfl(allphyssum ~ physmonth + region + USRace2 + bmi +  PatientSexComplete + MSbestcharacterizes + DEMO_AGE + lowerex + EmployStatus + cognitive, dist = "negbin", data = master)
+summary(cognitive)
+
+```
+## Positive Affect
+```{r pos numeric, warning = FALSE}
+
+## T Score
+positiviT <- pscl::zeroinfl(allphyssum ~ physmonth + region + USRace2 + bmi + PatientSexComplete + MSbestcharacterizes + DEMO_AGE + lowerex + EmployStatus + posT, dist = "negbin", data = master)
+summary(positiviT)
+
+## Raw Score
+positivi <- pscl::zeroinfl(allphyssum ~ physmonth + region + USRace2 + bmi +  PatientSexComplete + MSbestcharacterizes + DEMO_AGE + lowerex + EmployStatus + pos, dist = "negbin", data = master)
+summary(positivi)
+
+```
+
+## Depression
+
+```{r depression numeric, warning = FALSE}
+
+## T Score
+depressionT <- pscl::zeroinfl(allphyssum ~ physmonth + region + USRace2 + bmi + PatientSexComplete + MSbestcharacterizes + DEMO_AGE + lowerex + EmployStatus + depressionT, dist = "negbin", data = master)
+summary(depressionT)
+
+## Raw Score
+depression <- pscl::zeroinfl(allphyssum ~ physmonth + region + USRace2 + bmi +  PatientSexComplete + MSbestcharacterizes + DEMO_AGE + lowerex + EmployStatus + depression, dist = "negbin", data = master)
+summary(depression)
+
+```
+
+
+## Sex-Stratified Models
+
+```{r sex breakups, warning = FALSE}
+master$PatientSexComplete <- as.factor(master$PatientSexComplete)
+summary(master$PatientSexComplete)
+
+male <- filter(master, PatientSexComplete =="M")
+nrow(male)
+
+
+female <- filter(master, PatientSexComplete=="F")
+nrow(female)
+
+```
+
+### Male
+#### KS Minus Positivity and Employment
+
+```{r kitchen sink male, warning = FALSE}
+
+## T Score
+maleksmodelT <- pscl::zeroinfl(allphyssum ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerexT + EmployStatus + cognitiveT + depressionT, dist = "negbin", data = male)
+summary(maleksmodelT)
+mksminusmodelTOR <- exp(cbind(OR = coef(maleksmodelT), confint(maleksmodelT)))
+write.csv(mksminusmodelTOR, file = "ksminusmodelTORmale.csv")
+
+## Raw Score
+maleksmodel <- pscl::zeroinfl(allphyssum ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerex + EmployStatus + cognitive + 
+                                pos + depression, dist = "negbin", data = male)
+summary(maleksmodel)
+
+```
+#### Cognitive
+```{r cognitive male, warning = FALSE}
+
+## T Score
+malecognitiveT <- pscl::zeroinfl(allphyssum ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerexT + EmployStatus + cognitiveT, dist = "negbin", data = male)
+summary(malecognitiveT)
+
+## Raw Score
+malecognitive <- pscl::zeroinfl(allphyssum ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerex + EmployStatus + cognitive, dist = "negbin", data = male)
+summary(malecognitive)
+
+```
+#### Positive Affect
+```{r pos male, warning = FALSE}
+
+## T Score
+malepositiviT <- pscl::zeroinfl(allphyssum ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerex + EmployStatus + posT, dist = "negbin", data = male)
+summary(malepositiviT)
+
+## Raw Score
+malepositivi <- pscl::zeroinfl(allphyssum ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerex + EmployStatus + pos, dist = "negbin", data = male)
+summary(malepositivi)
+
+```
+#### Depression
+
+```{r depression male, warning = FALSE}
+
+## T Score
+maledepressionT <- pscl::zeroinfl(allphyssum ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerex + EmployStatus + depressionT, dist = "negbin", data = male)
+summary(maledepressionT)
+
+## Raw Score
+maledepression <- pscl::zeroinfl(allphyssum ~ physmonth + region + USRace2 + bmi  + MSbestcharacterizes + DEMO_AGE + lowerex + EmployStatus + depression, dist = "negbin", data = male)
+summary(maledepression)
+
+```
+
+
+### Female
+#### All 3 Short Forms Minus etc
+
+```{r kitchen sink female, warning = FALSE}
+
+## T Score
+femaleksmodelT <- pscl::zeroinfl(allphyssum ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerexT + cognitiveT + depressionT, dist = "negbin", data = female)
+summary(femaleksmodelT)
+fksminusmodelTOR <- exp(cbind(OR = coef(femaleksmodelT), confint(femaleksmodelT)))
+write.csv(fksminusmodelTOR, file = "ksminusmodelTORfemale.csv")
+
+## Raw Score
+femaleksmodel <- pscl::zeroinfl(allphyssum ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerex + cognitive + depression, dist = "negbin", data = female)
+summary(femaleksmodel)
+
+```
+#### Cognitive
+```{r cognitive female, warning = FALSE}
+
+## T Score
+femalecognitiveT <- pscl::zeroinfl(allphyssum ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerexT + EmployStatus + cognitiveT, dist = "negbin", data = female)
+summary(femalecognitiveT)
+
+## Raw Score
+femalecognitive <- pscl::zeroinfl(allphyssum ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerex + EmployStatus + cognitive, dist = "negbin", data = female)
+summary(femalecognitive)
+
+```
+#### Positive Affect
+```{r pos female, warning = FALSE}
+
+## T Score
+femalepositiviT <- pscl::zeroinfl(allphyssum ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerex + EmployStatus + posT, dist = "negbin", data = female)
+summary(femalepositiviT)
+
+## Raw Score
+femalepositivi <- pscl::zeroinfl(allphyssum ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerex + EmployStatus + pos, dist = "negbin", data = female)
+summary(femalepositivi)
+
+```
+
+#### Depression
+```{r depression female, warning = FALSE}
+
+## T Score
+femaledepressionT <- pscl::zeroinfl(allphyssum ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerex + EmployStatus + depressionT, dist = "negbin", data = female)
+summary(femaledepressionT)
+
+## Raw Score
+femaledepression <- pscl::zeroinfl(allphyssum ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerex + EmployStatus + depression, dist = "negbin", data = female)
+summary(femaledepression)
+
+```
+## BMI Stratified Kitchen Sink Models (Using the T Scores)
+
+```{r bmi breakups, warning = FALSE}
+
+summary(master$bmi)
+
+undernormal <- filter(master, bmi=="Underweight" | bmi=="Normal")
+nrow(undernormal)
+
+overweight <- filter(master, bmi=="Overweight")
+nrow(overweight)
+
+obese <- filter(master, bmi=="Obese")
+nrow(obese)
+
+```
+### Underweight / Normal
+
+```{r kitchen sink undernormal, warning = FALSE}
+
+undernormalksmodelT <- pscl::zeroinfl(allphyssum ~ physmonth + region + USRace2 + PatientSexComplete + MSbestcharacterizes + DEMO_AGE + lowerexT + cognitiveT + depressionT, dist = "negbin", data = undernormal)
+summary(undernormalksmodelT)
+undernormalksmodelTOR <- exp(cbind(OR = coef(undernormalksmodelT), confint(undernormalksmodelT)))
+write.csv(undernormalksmodelTOR, file = "undernormalksmodelTOR.csv")
+
+```
+
+### Overweight
+
+```{r kitchen sink overweight, warning = FALSE}
+
+overweightksmodelT <- pscl::zeroinfl(allphyssum ~ physmonth + region + USRace2 + PatientSexComplete + MSbestcharacterizes + DEMO_AGE + lowerexT + cognitiveT + depressionT, dist = "negbin", data = overweight)
+summary(overweightksmodelT)
+overweightksmodelTOR <- exp(cbind(OR = coef(overweightksmodelT), confint(overweightksmodelT)))
+write.csv(overweightksmodelTOR, file = "overweightksmodelTOR.csv")
+
+```
+
+### Obese
+
+```{r kitchen sink overweight, warning = FALSE}
+
+obeseksmodelT <- pscl::zeroinfl(allphyssum ~ physmonth + region + USRace2 + PatientSexComplete + MSbestcharacterizes + DEMO_AGE + lowerexT + cognitiveT + depressionT, dist = "negbin", data = obese)
+summary(obeseksmodelT)
+
+obeseksmodelTOR <- exp(cbind(OR = coef(obeseksmodelT), confint(obeseksmodelT)))
+write.csv(obeseksmodelTOR, file = "obeseksmodelTOR.csv")
+
+```
+
+## Lower Extremity Function-Stratified Kitchen Sink Models (Using the T Scores)
+
+```{r bmi breakups, warning = FALSE}
+
+summary(master$lowerexT)
+
+firstsecondQ <- filter(master, 1<=lowerexT & 28>lowerexT)
+nrow(firstsecondQ)
+
+thirdfourthQ <- filter(master, 28<=lowerexT)
+nrow(thirdfourthQ)
+
+```
+### Bottom Half
+
+```{r kitchen sink 1st q, warning = FALSE}
+
+firstsecondQks <- pscl::zeroinfl(allphyssum ~ physmonth + USRace2 + PatientSexComplete + MSbestcharacterizes + DEMO_AGE + bmi + cognitiveT + depressionT, dist = "negbin", data = firstsecondQ)
+summary(firstsecondQks)
+firstsecondQksOR <- exp(cbind(OR = coef(firstsecondQks), confint(firstsecondQks)))
+write.csv(firstsecondQksOR, file = "firstsecondQksOR.csv")
+
+```
+### Top Half
+
+```{r kitchen sink top half, warning = FALSE}
+
+thirdfourthQks <- pscl::zeroinfl(allphyssum ~ physmonth + USRace2 + PatientSexComplete + MSbestcharacterizes + DEMO_AGE + bmi + cognitiveT + depressionT, dist = "negbin", data = thirdfourthQ)
+summary(thirdfourthQks)
+thirdfourthQksOR <- exp(cbind(OR = coef(thirdfourthQks), confint(thirdfourthQks)))
+write.csv(thirdfourthQksOR, file = "thirdfourthQksOR.csv")
+
+```
+
+
+
+# Binary Outcome - Meeting Recommendations
+
+## All 3 Short Forms
+```{r recommendations, warning = FALSE}
+
+summary(master$recommendedphys)
+
+# T Score
+recommendationsT <- glm(recommendedphys ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + PatientSexComplete + EmployStatus + lowerexT + cognitiveT + posT + depressionT, data = master, family = "binomial")
+summary(recommendationsT)
+
+
+# Raw Score
+recommendations <- glm(recommendedphys ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + PatientSexComplete + lowerex + EmployStatus + cognitive + pos + depression, data = master, family = "binomial")
+summary(recommendations)
+```
+### Without Employment
+
+```{r recommendations without empl, warning = FALSE}
+
+# T Score
+recommendationsTnoemp <- glm(recommendedphys ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + PatientSexComplete + lowerexT +  cognitiveT + posT + depressionT, data = master, family = "binomial")
+summary(recommendationsTnoemp)
+
+# Raw Score
+recommendationsnoemp <- glm(recommendedphys ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + PatientSexComplete + lowerex + cognitive + pos + depression, data = master, family = "binomial")
+summary(recommendationsnoemp)
+
+```
+### Without Employment or Positive Affect
+
+```{r recommendations no emp no pos, warning = FALSE}
+
+# T Score
+recommendationsminusT <- glm(recommendedphys ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + PatientSexComplete + lowerexT + cognitiveT + depressionT, data = master, family = "binomial")
+summary(recommendationsminusT)
+
+recommendationsminusTOR <- exp(cbind(OR = coef(recommendationsminusT), confint(recommendationsminusT)))
+write.csv(recommendationsminusTOR, file = "recommendationsminusTOR.csv")
+
+# Raw Score
+recommendationsminus <- glm(recommendedphys ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + PatientSexComplete + lowerex + cognitive + depression, data = master, family = "binomial")
+summary(recommendationsminus)
+```
+
+## Cognitive 
+```{r recommendations cognitive, warning = FALSE}
+
+# T Score
+recommendationscogT <- glm(recommendedphys ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + PatientSexComplete + lowerexT + EmployStatus + cognitiveT, data = master, family = "binomial")
+summary(recommendationscogT)
+
+# Raw Score
+recommendationscog <- glm(recommendedphys ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + PatientSexComplete + lowerex + EmployStatus + cognitive, data = master, family = "binomial")
+summary(recommendationscog)
+
+```
+### Without Employment
+```{r recommendations cognitive no empl, warning = FALSE}
+
+# T Score
+recommendationscogTnoemp <- glm(recommendedphys ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + PatientSexComplete + lowerexT + cognitiveT, data = master, family = "binomial")
+summary(recommendationscogTnoemp)
+
+# Raw Score
+recommendationscognoemp <- glm(recommendedphys ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + PatientSexComplete + lowerex + cognitive, data = master, family = "binomial")
+summary(recommendationscognoemp)
+
+```
+
+## Positive Affect
+```{r recommendations pos, warning = FALSE}
+
+# T Score
+recommendationsposT <- glm(recommendedphys ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerexT + PatientSexComplete + EmployStatus + posT, data = master, family = "binomial")
+summary(recommendationsposT)
+
+# Raw Score
+recommendationspos <- glm(recommendedphys ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerex + PatientSexComplete + EmployStatus + pos, data = master, family = "binomial")
+summary(recommendationspos)
+
+```
+### Without Employment
+
+```{r recommendations pos no emp, warning = FALSE}
+
+# T Score
+recommendationsposTnoemp <- glm(recommendedphys ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerexT + PatientSexComplete + EmployStatus + posT, data = master, family = "binomial")
+summary(recommendationsposTnoemp)
+
+# Raw Score
+recommendationsposnoemp <- glm(recommendedphys ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerex + PatientSexComplete + EmployStatus + pos, data = master, family = "binomial")
+summary(recommendationsposnoemp)
+
+```
+
+## Depression
+```{r recommendations dep, warning = FALSE}
+
+# T Score
+recommendationsdepT <- glm(recommendedphys ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerexT + PatientSexComplete + EmployStatus + depressionT, data = master, family = "binomial")
+summary(recommendationsdepT)
+
+# Raw Score
+recommendationsdep <- glm(recommendedphys ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerex + PatientSexComplete + EmployStatus + depression, data = master, family = "binomial")
+summary(recommendationsdep)
+
+```
+### Without Employment
+```{r recommendations dep no emp, warning = FALSE}
+
+# T Score
+recommendationsdepTnoemp <- glm(recommendedphys ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerexT + PatientSexComplete + depressionT, data = master, family = "binomial")
+summary(recommendationsdepTnoemp)
+
+
+# Raw Score
+recommendationsdepnoemp <- glm(recommendedphys ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerex + PatientSexComplete + depression, data = master, family = "binomial")
+summary(recommendationsdepnoemp)
+
+```
+
+
+
+
+
+## Sex Stratified
+
+### Male
+#### All 3 Short Forms
+```{r m recommendations, warning = FALSE}
+
+# T Score
+mrecommendationsT <- glm(recommendedphys ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerex + EmployStatus + cognitiveT + posT + depressionT, data = male, family = "binomial")
+summary(mrecommendationsT)
+
+
+# Raw Score
+mrecommendations <- glm(recommendedphys ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerex + EmployStatus + cognitive + pos + depression, data = male, family = "binomial")
+summary(mrecommendations)
+
+```
+##### Without Employment
+```{r m recommendations no emp, warning = FALSE}
+
+# T Score
+mrecommendationsTnoemp <- glm(recommendedphys ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerexT + cognitiveT + posT + depressionT, data = male, family = "binomial")
+summary(mrecommendationsTnoemp)
+
+# Raw Score
+mrecommendationsnoemp <- glm(recommendedphys ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerex + cognitive + pos + depression, data = male, family = "binomial")
+summary(mrecommendationsnoemp)
+
+```
+##### Without Employment or Positive Affect
+```{r m recommendations no emp no pos, warning = FALSE}
+
+# T Score
+mrecommendationsTnoempnopos <- glm(recommendedphys ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerexT + cognitiveT + depressionT, data = male, family = "binomial")
+summary(mrecommendationsTnoempnopos)
+mrecommendationsTOR <- exp(cbind(OR = coef(mrecommendationsTnoempnopos), confint(mrecommendationsTnoempnopos)))
+write.csv(mrecommendationsTOR, file = "mrecommendationsT.csv")
+
+# Raw Score
+mrecommendationsnoempnopos <- glm(recommendedphys ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerex + cognitive + depression, data = male, family = "binomial")
+summary(mrecommendationsnoempnopos)
+
+```
+
+#### Cognitive 
+```{r m recommendations cognitive, warning = FALSE}
+
+# T Score
+mrecommendationscogT <- glm(recommendedphys ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerexT + EmployStatus + cognitiveT, data = male, family = "binomial")
+summary(mrecommendationscogT)
+
+# Raw Score
+mrecommendationscog <- glm(recommendedphys ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerex + EmployStatus + cognitive, data = male, family = "binomial")
+summary(mrecommendationscog)
+
+```
+##### Without Employment
+```{r m recommendations cognitive no emp, warning = FALSE}
+
+# T Score
+mrecommendationscogTnoemp <- glm(recommendedphys ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerexT + EmployStatus + cognitiveT, data = male, family = "binomial")
+summary(mrecommendationscogTnoemp)
+
+# Raw Score
+mrecommendationscognoemp <- glm(recommendedphys ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerex + EmployStatus + cognitive, data = male, family = "binomial")
+summary(mrecommendationscognoemp)
+
+```
+
+#### Positive Affect
+```{r m recommendations pos, warning = FALSE}
+
+# T Score
+mrecommendationsposT <- glm(recommendedphys ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerexT + EmployStatus + posT, data = male, family = "binomial")
+summary(mrecommendationsposT)
+
+# Raw Score
+mrecommendationspos <- glm(recommendedphys ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerex + EmployStatus + pos, data = male, family = "binomial")
+summary(mrecommendationspos)
+
+```
+
+##### Without Emplyoment
+
+```{r m recommendations pos no emp, warning = FALSE}
+
+# T Score
+mrecommendationsposTnoemp <- glm(recommendedphys ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerexT + EmployStatus + posT, data = male, family = "binomial")
+summary(mrecommendationsposTnoemp)
+
+# Raw Score
+mrecommendationsposnoemp <- glm(recommendedphys ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerex + EmployStatus + pos, data = male, family = "binomial")
+summary(mrecommendationsposnoemp)
+
+```
+
+#### Depression
+```{r m recommendations dep, warning = FALSE}
+
+# T Score
+mrecommendationsdepT <- glm(recommendedphys ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerexT + EmployStatus + depressionT, data = male, family = "binomial")
+summary(mrecommendationsdepT)
+
+# Raw Score
+mrecommendationsdep <- glm(recommendedphys ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerex + EmployStatus + depression, data = male, family = "binomial")
+summary(mrecommendationsdep)
+
+```
+##### Without Employment
+```{r m recommendations dep no emp, warning = FALSE}
+
+# T Score
+mrecommendationsdepTnoemp <- glm(recommendedphys ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerexT + depressionT, data = male, family = "binomial")
+summary(mrecommendationsdepTnoemp)
+
+# Raw Score
+mrecommendationsdepnoemp <- glm(recommendedphys ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerex + depression, data = male, family = "binomial")
+summary(mrecommendationsdepnoemp)
+
+```
+
+
+
+
+### Female 
+#### All 3 Short Forms
+```{r fem recommendations, warning = FALSE}
+
+# T Score
+femrecommendationsT <- glm(recommendedphys ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerexT + EmployStatus + cognitiveT + posT + depressionT, data = female, family = "binomial")
+summary(femrecommendationsT)
+
+# Raw Score
+femrecommendations <- glm(recommendedphys ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerex + EmployStatus + cognitive + pos + depression, data = female, family = "binomial")
+summary(femrecommendations)
+
+```
+##### Without Employment
+```{r fem recommendations no emp, warning = FALSE}
+
+# T Score
+femrecommendationsTnoemp <- glm(recommendedphys ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerexT + cognitiveT + posT + depressionT, data = female, family = "binomial")
+summary(femrecommendationsTnoemp)
+
+# Raw Score
+femrecommendationsnoemp <- glm(recommendedphys ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerex + cognitive + pos + depression, data = female, family = "binomial")
+summary(femrecommendationsnoemp)
+
+```
+##### Without Employment or Positive Affect
+```{r fem recommendations no emp no pos, warning = FALSE}
+
+# T Score
+femrecommendationsTnoempnopos <- glm(recommendedphys ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerexT + cognitiveT + depressionT, data = female, family = "binomial")
+summary(femrecommendationsTnoempnopos)
+frecommendationsTOR <- exp(cbind(OR = coef(femrecommendationsTnoempnopos), confint(femrecommendationsTnoempnopos)))
+write.csv(frecommendationsTOR, file = "frecommendationsT.csv")
+
+# Raw Score
+femrecommendationsnoempnopos <- glm(recommendedphys ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerex + cognitive + depression, data = female, family = "binomial")
+summary(femrecommendationsnoempnopos)
+
+```
+
+#### Cognitive 
+```{r fem recommendations cognitive, warning = FALSE}
+
+# T Score
+femrecommendationscogT <- glm(recommendedphys ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerexT + EmployStatus + cognitiveT, data = female, family = "binomial")
+summary(femrecommendationscogT)
+
+# Raw Score
+femrecommendationscog <- glm(recommendedphys ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerex + EmployStatus + cognitive, data = female, family = "binomial")
+summary(femrecommendationscog)
+
+```
+##### Without Employment
+```{r fem recommendations cognitive no emp, warning = FALSE}
+
+# T Score
+femrecommendationscogTnoemp <- glm(recommendedphys ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerexT + cognitiveT, data = female, family = "binomial")
+summary(femrecommendationscogTnoemp)
+
+# Raw Score
+femrecommendationscognoemp <- glm(recommendedphys ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerex + cognitive, data = female, family = "binomial")
+summary(femrecommendationscognoemp)
+
+```
+
+#### Positive Affect
+```{r fem recommendations pos, warning = FALSE}
+
+# T Score
+femrecommendationsposT <- glm(recommendedphys ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerexT + EmployStatus + posT, data = female, family = "binomial")
+summary(femrecommendationsposT)
+
+# Raw Score
+femrecommendationspos <- glm(recommendedphys ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerex + EmployStatus + pos, data = female, family = "binomial")
+summary(femrecommendationspos)
+
+```
+##### Without Employment
+```{r fem recommendations pos no emp, warning = FALSE}
+
+# T Score
+femrecommendationsposTnoemp <- glm(recommendedphys ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerexT + posT, data = female, family = "binomial")
+summary(femrecommendationsposTnoemp)
+
+# Raw Score
+femrecommendationsposnoemp <- glm(recommendedphys ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerex + pos, data = female, family = "binomial")
+summary(femrecommendationsposnoemp)
+
+```
+
+#### Depression
+```{r fem recommendations dep, warning = FALSE}
+
+# T Score
+femrecommendationsdepT <- glm(recommendedphys ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerexT + EmployStatus + depressionT, data = female, family = "binomial")
+summary(femrecommendationsdepT)
+
+# Raw Score
+femrecommendationsdep <- glm(recommendedphys ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerex + EmployStatus + depression, data = female, family = "binomial")
+summary(femrecommendationsdep)
+
+```
+##### Without Employment
+```{r fem recommendations dep no emp, warning = FALSE}
+
+# T Score
+femrecommendationsdepTnoemp <- glm(recommendedphys ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerexT + depressionT, data = female, family = "binomial")
+summary(femrecommendationsdepTnoemp)
+
+# Raw Score
+femrecommendationsdepnoemp <- glm(recommendedphys ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerex + depression, data = female, family = "binomial")
+summary(femrecommendationsdepnoemp)
+
+```
+
+## BMI Stratified Kitchen Sink Models (Using the T Scores)
+
+### Underweight / Normal
+
+```{r rec kitchen sink undernormal, warning = FALSE}
+
+undernormalrecommendationsT <- glm(recommendedphys ~ physmonth + region + USRace2 + MSbestcharacterizes + DEMO_AGE + PatientSexComplete + lowerexT + cognitiveT + depressionT, data = undernormal, family = "binomial")
+summary(undernormalrecommendationsT)
+unrecommendationsTOR <- exp(cbind(OR = coef(undernormalrecommendationsT), confint(undernormalrecommendationsT)))
+write.csv(unrecommendationsTOR, file = "unrecommendationsTOR.csv")
+```
+
+### Overweight
+
+```{r rec kitchen sink overweight, warning = FALSE}
+
+overweightrecommendationsT <- glm(recommendedphys ~ physmonth + region + USRace2 + MSbestcharacterizes + DEMO_AGE + PatientSexComplete + lowerexT + cognitiveT + depressionT, data = overweight, family = "binomial")
+summary(overweightrecommendationsT)
+overrecommendationsTOR <- exp(cbind(OR = coef(overweightrecommendationsT), confint(overweightrecommendationsT)))
+write.csv(overrecommendationsTOR, file = "overrecommendationsTOR.csv")
+
+```
+
+### Obese
+
+```{r rec kitchen sink obese, warning = FALSE}
+
+obeserecommendationsT <- glm(recommendedphys ~ physmonth + region + USRace2 + MSbestcharacterizes + DEMO_AGE + PatientSexComplete + lowerexT + cognitiveT + depressionT, data = obese, family = "binomial")
+summary(obeserecommendationsT)
+obeserecommendationsTOR <- exp(cbind(OR = coef(obeserecommendationsT), confint(obeserecommendationsT)))
+write.csv(obeserecommendationsTOR, file = "obeserecommendationsTOR.csv")
+
+```
+
+
+## Lower Extremity Function Stratified Kitchen Sink Models (Using the T Scores)
+
+### Top Half
+
+```{r rec kitchen sink top, warning = FALSE}
+
+toprecommendationsT <- glm(recommendedphys ~ physmonth + region + USRace2 + MSbestcharacterizes + DEMO_AGE + PatientSexComplete + bmi + cognitiveT + depressionT, data = firstsecondQ, family = "binomial")
+
+toprecommendationsTOR <- exp(cbind(OR = coef(toprecommendationsT), confint(toprecommendationsT)))
+write.csv(toprecommendationsTOR, file = "toprecommendationsTOR.csv")
+
+summary(toprecommendationsT)
+
+```
+
+
+### Bottom Half
+
+```{r rec kitchen sink bottom, warning = FALSE}
+
+bottomrecommendationsT <- glm(recommendedphys ~ physmonth + region + USRace2 + MSbestcharacterizes + DEMO_AGE + PatientSexComplete + bmi + cognitiveT + depressionT, data = thirdfourthQ, family = "binomial")
+
+bottomrecommendationsTOR <- exp(cbind(OR = coef(bottomrecommendationsT), confint(bottomrecommendationsT)))
+write.csv(bottomrecommendationsTOR, file = "bottomrecommendationsTOR.csv")
+
+summary(bottomrecommendationsT)
+
+```
+
+
+
+# Binary Outcome - "At Least"s
+
+## Mild (Any Exercise)
+### All Short Forms
+```{r at least mild, warning = FALSE}
+
+# T Score
+mildplusT <- glm(mildplus ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + PatientSexComplete +  lowerexT + EmployStatus + cognitiveT + posT + depressionT, data = master, family = "binomial")
+summary(mildplusT)
+
+# Raw Score
+mildplus <- glm(mildplus ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + PatientSexComplete + lowerex + EmployStatus + cognitive + pos + depression, data = master, family = "binomial")
+summary(mildplus)
+
+```
+#### Without Employment
+```{r at least mild no emp, warning = FALSE}
+
+# T Score
+mildplusTnoemp <- glm(mildplus ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + PatientSexComplete +  lowerexT + cognitiveT + posT + depressionT, data = master, family = "binomial")
+summary(mildplusTnoemp)
+
+# Raw Score
+mildplusnoemp <- glm(mildplus ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + PatientSexComplete + lowerex + cognitive + pos + depression, data = master, family = "binomial")
+summary(mildplusnoemp)
+
+```
+
+#### Without Employment or Positive Affect
+```{r at least mild, warning = FALSE}
+
+# T Score
+mildplusTminus <- glm(mildplus ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + PatientSexComplete +  lowerexT + cognitiveT + depressionT, data = master, family = "binomial")
+summary(mildplusTminus)
+
+# Raw Score
+mildplusminus <- glm(mildplus ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + PatientSexComplete + lowerex + + cognitive + depression, data = master, family = "binomial")
+summary(mildplusminus)
+
+```
+
+### Cognitive
+```{r at least mild cog , warning = FALSE}
+
+# T Score
+mildpluscogT <- glm(mildplus ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerex + EmployStatus + cognitiveT, data = master, family = "binomial")
+summary(mildpluscogT)
+
+# Raw Score
+mildpluscog <- glm(mildplus ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerex + EmployStatus + cognitive, data = master, family = "binomial")
+summary(mildpluscog)
+
+```
+#### Without Employment
+```{r at least mild cog no emp, warning = FALSE}
+
+# T Score
+mildpluscogTnoemp <- glm(mildplus ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerexT + cognitiveT, data = master, family = "binomial")
+summary(mildpluscogTnoemp)
+
+# Raw Score
+mildpluscognoemp <- glm(mildplus ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerex + cognitive, data = master, family = "binomial")
+summary(mildpluscognoemp)
+
+```
+
+### Positive Affect
+```{r at least mild pos, warning = FALSE}
+
+# T Score
+mildplusposT <- glm(mildplus ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerex + EmployStatus + posT, data = master, family = "binomial")
+summary(mildplusposT)
+
+# Raw Score
+mildpluspos <- glm(mildplus ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerex + EmployStatus + pos, data = master, family = "binomial")
+summary(mildpluspos)
+
+```
+#### Without Employment
+
+```{r at least mild pos no emp, warning = FALSE}
+
+# T Score
+mildplusposTnoemp <- glm(mildplus ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerexT + posT, data = master, family = "binomial")
+summary(mildplusposTnoemp)
+
+# Raw Score
+mildplusposnoemp <- glm(mildplus ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerex + pos, data = master, family = "binomial")
+summary(mildplusposnoemp)
+
+```
+
+### Depression
+```{r at least mild dep, warning = FALSE}
+
+# T Score
+mildplusdepT <- glm(mildplus ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerexT + EmployStatus + depressionT, data = master, family = "binomial")
+summary(mildplusdepT)
+
+# Raw Score
+mildplusdep <- glm(mildplus ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerex + EmployStatus + depression, data = master, family = "binomial")
+summary(mildplusdep)
+
+```
+
+#### Without Employment
+```{r at least mild dep noemp, warning = FALSE}
+
+# T Score
+mildplusdepTnoemp <- glm(mildplus ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerexT + depressionT, data = master, family = "binomial")
+summary(mildplusdepTnoemp)
+
+# Raw Score
+mildplusdepnoemp <- glm(mildplus ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerex + depression, data = master, family = "binomial")
+summary(mildplusdepnoemp)
+
+```
+
+### Sex Stratified
+
+#### Male
+##### All Short Forms
+```{r at least mild male, warning = FALSE}
+
+# T Score
+mmildplusT <- glm(mildplus ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerexT + EmployStatus + cognitiveT + posT + depressionT, data = male, family = "binomial")
+summary(mmildplusT)
+
+# Raw Score
+mmildplus <- glm(mildplus ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerex + EmployStatus + cognitive + pos + depression, data = male, family = "binomial")
+summary(mmildplus)
+
+```
+###### Without Employment
+```{r at least mild male no emp, warning = FALSE}
+
+# T Score
+mmildplusTnoemp <- glm(mildplus ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerexT + cognitiveT + posT + depressionT, data = male, family = "binomial")
+summary(mmildplusTnoemp)
+
+# Raw Score
+mmildplusnoemp <- glm(mildplus ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerex + cognitive + pos + depression, data = male, family = "binomial")
+summary(mmildplusnoemp)
+
+```
+###### Without Employment or Positive Affect
+```{r at least mild male no emp, warning = FALSE}
+
+# T Score
+mmildplusTnoempnopos <- glm(mildplus ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerexT + cognitiveT + depressionT, data = male, family = "binomial")
+summary(mmildplusTnoempnopos)
+
+# Raw Score
+mmildplusnoempnopos <- glm(mildplus ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerex + cognitive + depression, data = male, family = "binomial")
+summary(mmildplusnoempnopos)
+
+```
+
+##### Cognitive
+```{r male at least mild cog , warning = FALSE}
+
+# T Score
+mmildpluscogT <- glm(mildplus ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerexT + EmployStatus + cognitiveT, data = male, family = "binomial")
+summary(mmildpluscogT)
+
+# Raw Score
+mmildpluscog <- glm(mildplus ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerex + EmployStatus + cognitive, data = male, family = "binomial")
+summary(mmildpluscog)
+
+```
+###### Without Employment
+```{r male at least mild cog noemp, warning = FALSE}
+
+# T Score
+mmildpluscogTnoemp <- glm(mildplus ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerexT + cognitiveT, data = male, family = "binomial")
+summary(mmildpluscogTnoemp)
+
+# Raw Score
+mmildpluscognoemp <- glm(mildplus ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerex + cognitive, data = male, family = "binomial")
+summary(mmildpluscognoemp)
+
+```
+
+##### Positive Affect
+```{r male at least mild pos, warning = FALSE}
+
+# T Score
+mmildplusposT <- glm(mildplus ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerexT + EmployStatus + posT, data = male, family = "binomial")
+summary(mmildplusposT)
+
+# Raw Score
+mmildpluspos <- glm(mildplus ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerex + EmployStatus + pos, data = male, family = "binomial")
+summary(mmildpluspos)
+
+```
+###### Without Employment
+```{r male at least mild pos no emp, warning = FALSE}
+
+# T Score
+mmildplusposTnoemp <- glm(mildplus ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerexT + posT, data = male, family = "binomial")
+summary(mmildplusposTnoemp)
+
+# Raw Score
+mmildplusposnoemp <- glm(mildplus ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerex + pos, data = male, family = "binomial")
+summary(mmildplusposnoemp)
+
+```
+
+##### Depression
+```{r male at least mild dep, warning = FALSE}
+
+# T Score
+mmildplusdepT <- glm(mildplus ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerexT + EmployStatus + depressionT, data = male, family = "binomial")
+summary(mmildplusdepT)
+
+# Raw Score
+mmildplusdep <- glm(mildplus ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerex + EmployStatus + depression, data = male, family = "binomial")
+summary(mmildplusdep)
+
+```
+###### Without Employment
+```{r male at least mild dep no emp, warning = FALSE}
+
+# T Score
+mmildplusdepTnoemp <- glm(mildplus ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerexT + depressionT, data = male, family = "binomial")
+summary(mmildplusdepTnoemp)
+
+# Raw Score
+mmildplusdepnoemp <- glm(mildplus ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerex + depression, data = male, family = "binomial")
+summary(mmildplusdepnoemp)
+
+```
+
+
+
+
+#### Female
+##### All Short Forms
+```{r at least mild female, warning = FALSE}
+
+# T Score
+femmildplusT <- glm(mildplus ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerexT + EmployStatus + cognitiveT + posT + depressionT, data = female, family = "binomial")
+summary(femmildplusT)
+
+# Raw Score
+femmildplus <- glm(mildplus ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerex + EmployStatus + cognitive + pos + depression, data = female, family = "binomial")
+summary(femmildplus)
+
+```
+###### Without Employment
+```{r at least mild female no emp, warning = FALSE}
+
+# T Score
+femmildplusTnoemp <- glm(mildplus ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerexT + cognitiveT + posT + depressionT, data = female, family = "binomial")
+summary(femmildplusTnoemp)
+
+# Raw Score
+femmildplusnoemp <- glm(mildplus ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerex + cognitive + pos + depression, data = female, family = "binomial")
+summary(femmildplusnoemp)
+
+```
+###### Without Employment or Positive Affect
+```{r at least mild female no emp no pos, warning = FALSE}
+
+# T Score
+femmildplusTnoempnopos <- glm(mildplus ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerexT + cognitiveT + depressionT, data = female, family = "binomial")
+summary(femmildplusTnoempnopos)
+
+# Raw Score
+femmildplusnoempnopos <- glm(mildplus ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerex + cognitive + depression, data = female, family = "binomial")
+summary(femmildplusnoempnopos)
+
+```
+
+##### Cognitive
+```{r female at least mild cog , warning = FALSE}
+
+# T Score
+femmildpluscogT <- glm(mildplus ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerexT + EmployStatus + cognitiveT, data = female, family = "binomial")
+summary(femmildpluscogT)
+
+# Raw Score
+femmildpluscog <- glm(mildplus ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerex + EmployStatus + cognitive, data = female, family = "binomial")
+summary(femmildpluscog)
+
+```
+###### Without Employment
+```{r female at least mild cog no emp, warning = FALSE}
+
+# T Score
+femmildpluscogTnoemp <- glm(mildplus ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerexT + cognitiveT, data = female, family = "binomial")
+summary(femmildpluscogTnoemp)
+
+# Raw Score
+femmildpluscognoempnoemp <- glm(mildplus ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerex + cognitive, data = female, family = "binomial")
+summary(femmildpluscog)
+
+```
+
+##### Positive Affect
+```{r fe male at least mild pos, warning = FALSE}
+
+# T Score
+femmildplusposT <- glm(mildplus ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerexT + EmployStatus + posT, data = female, family = "binomial")
+summary(femmildplusposT)
+
+# Raw Score
+femmildpluspos <- glm(mildplus ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerex + EmployStatus + pos, data = female, family = "binomial")
+summary(femmildpluspos)
+
+```
+###### Without Employment
+```{r female at least mild pos no emp, warning = FALSE}
+
+# T Score
+femmildplusposTnoemp <- glm(mildplus ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerexT + posT, data = female, family = "binomial")
+summary(femmildplusposTnoemp)
+
+# Raw Score
+femmildplusposnoemp <- glm(mildplus ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerex + pos, data = female, family = "binomial")
+summary(femmildplusposnoemp)
+
+```
+
+##### Depression
+```{r female at least mild dep, warning = FALSE}
+
+# T Score
+femmildplusdepT <- glm(mildplus ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerexT + EmployStatus + depressionT, data = female, family = "binomial")
+summary(femmildplusdepT)
+
+# Raw Score
+femmildplusdep <- glm(mildplus ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerex + EmployStatus + depression, data = female, family = "binomial")
+summary(femmildplusdep)
+
+```
+###### Without Employment
+```{r female at least mild dep, warning = FALSE}
+
+# T Score
+femmildplusdepTnoemp <- glm(mildplus ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerexT + depressionT, data = female, family = "binomial")
+summary(femmildplusdepTnoemp)
+
+# Raw Score
+femmildplusdepnoemp <- glm(mildplus ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + lowerex + depression, data = female, family = "binomial")
+summary(femmildplusdepnoemp)
+
+```
+
+## BMI Stratified Kitchen Sink Models (Using the T Scores)
+
+### Underweight / Normal
+
+```{r any kitchen sink undernormal, warning = FALSE}
+
+undernormalmildplusT <- glm(mildplus ~ physmonth + region + USRace2 + MSbestcharacterizes + DEMO_AGE + PatientSexComplete + lowerexT + cognitiveT + posT + depressionT, data = undernormal, family = "binomial")
+summary(undernormalmildplusT)
+
+```
+
+### Overweight
+
+```{r any kitchen sink overweight, warning = FALSE}
+
+overweightmildplusT <- glm(mildplus ~ physmonth + region + USRace2 + MSbestcharacterizes + DEMO_AGE + PatientSexComplete + lowerexT + cognitiveT + posT + depressionT, data = overweight, family = "binomial")
+summary(overweightmildplusT)
+
+```
+
+### Obese
+
+```{r any kitchen sink obese, warning = FALSE}
+
+obesemildplusT <- glm(mildplus ~ physmonth + region + USRace2 + MSbestcharacterizes + DEMO_AGE + PatientSexComplete + lowerexT + cognitiveT + posT + depressionT, data = obese, family = "binomial")
+summary(obesemildplusT)
+
+```
+
+
+# Correlation 
+
+## Between the Short Form Scores
+
+```{r cog pos, warning = FALSE}
+
+# T Score
+cogposT <- cor.test(master$cognitiveT, master$posT, 
+                    method = "pearson")
+cogposT
+
+```
+
+
+```{r dep pos, warning = FALSE}
+
+# T Score
+depposT <- cor.test(master$depressionT, master$posT, 
+                    method = "pearson")
+depposT
+
+```
+```{r dep emo, warning = FALSE}
+
+# T Score
+depemoT <- cor.test(master$depressionT, master$ebdysT, 
+                    method = "pearson")
+depemoT
+
+```
+```{r cog emo, warning = FALSE}
+
+# T Score
+cogemoT <- cor.test(master$cognitiveT, master$ebdysT, 
+                    method = "pearson")
+cogemoT
+
+```
+```{r pos emo, warning = FALSE}
+
+# T Score
+posemoT <- cor.test(master$posT, master$ebdysT, 
+                    method = "pearson")
+posemoT
+
+```
+
+
+```{r dep cog, warning = FALSE}
+
+# T Score
+depcogT <- cor.test(master$depressionT, master$cognitiveT, 
+                    method = "pearson")
+depcogT
+
+```
+
+```{r fatigue all, warning = FALSE}
+
+# Cognitive
+fatcogT <- cor.test(master$fatigueT, master$cognitiveT, 
+                    method = "pearson")
+fatcogT
+
+# Depression
+fatdepT <- cor.test(master$depressionT, master$fatigueT, 
+                    method = "pearson")
+fatdepT
+
+# Positive Affect
+fatposT <- cor.test(master$fatigueT, master$posT, 
+                    method = "pearson")
+fatposT
+
+```
+
+## Between Lower Extremity Function and Employment
+```{r emp lowerex, warning = FALSE}
+
+# T Score
+emplowerexT <- lm(lowerexT ~ EmployStatus, 
+                    data = master)
+summary(emplowerexT)
+
+
+```
+
+## Between Age and MS Subtype
+```{r emp lowerex, warning = FALSE}
+
+# T Score
+agesubtype <- lm(DEMO_AGE ~ MSbestcharacterizes, 
+                    data = master)
+summary(agesubtype)
+
+
+```
+
+## Using GGPairs
+
+```{r fun times with ggpairs, warning = FALSE}
+
+ggpairs(master %>% select(lowerexT, cognitiveT, posT, depressionT, ebdysT))
+
+```
+
+(Positive affect and depression's scatterplot is... a line! This is expected - it's generally safe to say that happier people tend to have fewer depression symptoms and vice versa - but it is still very cool and fun.)
+
+
+# Variance Inflation
+
+Working with the T score kitchen sink models minus employment:
+
+## Numeric Outcome (without employment)
+
+```{r variance inflation no emp, warning = FALSE}
+
+car::vif(pscl::zeroinfl(allphyssum ~ physmonth + region + USRace2 + bmi + PatientSexComplete + MSbestcharacterizes + DEMO_AGE + lowerexT + cognitiveT + posT + depressionT + ebdysT, dist = "negbin", data = master))
+
+```
+Age, lower extremity function, and our 3 T scores are popping up.
+
+## Numeric Outcome Baseline
+
+```{r variance inflation no emp, warning = FALSE}
+
+car::vif(pscl::zeroinfl(allphyssum ~ physmonth + region + USRace2 + bmi + PatientSexComplete + MSbestcharacterizes + DEMO_AGE, dist = "negbin", data = master))
+
+```
+
+## Binary - Meeting Recommendations
+```{r variance inflation recommended, warning = FALSE}
+
+car::vif(recommendationsTnoemp)
+
+```
+Positive affect and depression are the worst here, in terms of variance inflation
+
+## Binary - Any exercise
+```{r variance inflation, warning = FALSE}
+
+car::vif(mildplusTnoemp)
+
+```
+Positive affect and depression, once again
+
+# Quick Test of Fatigue?
+```{r variance inflation, warning = FALSE}
+
+nofat <- pscl::zeroinfl(allphyssum ~ physmonth + region + USRace2 + bmi + PatientSexComplete + MSbestcharacterizes + DEMO_AGE + lowerexT + cognitiveT + posT + depressionT + fatigueT, dist = "negbin", data = master)
+fat <-  pscl::zeroinfl(allphyssum ~ physmonth + region + USRace2 + bmi + PatientSexComplete + MSbestcharacterizes + DEMO_AGE + lowerexT + cognitiveT + posT + depressionT, dist = "negbin", data = master)
+
+summary(nofat)
+summary(fat)
+
+```
+
+# Is the shortened model better?
+```{r anova shortened, warning = FALSE}
+
+long <- pscl::zeroinfl(allphyssum ~ physmonth + region + USRace2 + bmi + PatientSexComplete + MSbestcharacterizes + DEMO_AGE + lowerexT + cognitiveT + posT + depressionT + ebdysT, dist = "negbin", data = master)
+short <- pscl::zeroinfl(allphyssum ~ physmonth + region + USRace2 + bmi + PatientSexComplete + MSbestcharacterizes + DEMO_AGE + lowerexT + cognitiveT + depressionT, dist = "negbin", data = master)
+
+vuong(long, short)
+
+```
+
+# Export Final Data File
+```{r export, warning = FALSE}
+
+write_xlsx(master, "IJMSCFinalData.xlsx") 
+
+```

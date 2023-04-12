@@ -1,0 +1,705 @@
+---
+title: "Shortened Report of Capstone Findings: Determining the Effects of Neurological Patient Reported Outcomes on Physical Activity Level among Persons with Multiple Sclerosis"
+author: "Emily Tyszka"
+date: "`r Sys.Date()`"
+linkcolor: blue
+output:
+    rmdformats::readthedown:
+    highlight: kate
+    number_sections: true
+    code_folding: show
+    df_print: paged
+---
+
+# Initial Setup and Package Loads in R: 
+```{r package loads, message = FALSE, comment = NA}
+
+library(Epi); library(janitor); library(here); library(readxl); library(magrittr); library(data.table)
+library(writexl); library(haven); library(MASS); library(skimr); library(naniar); library(sjPlot);
+library(car); library(base); library(rms); library(broom); library(DescTools); library(pscl);
+library(psych); library(caret); library(GGally); library(plyr); library(knitr); 
+library(lubridate); library(table1); library(tableone); library(tidyverse) 
+
+```
+
+# Data Preparation:
+## Load and Merge the Datasets:
+
+iConquerMS Datasets are loaded and merged. (Nothing to look at - this is just set-up)
+
+```{r prepare_data, warning = FALSE,  message=FALSE}
+
+# Load Data
+rawsurveys <- read_excel("master.112020.usa.ms.3300.xlsx")
+rawsurveys <- subset(rawsurveys, select = -c(DEMO_AGE))
+demosex <- read_excel("report_nina_demographics_baseline_and_longitudinal_elements_allusers.xlsx")
+demosex <- demosex %>% select(ownerId, PatientSex)
+ages <- read_excel("master.age.112020.xlsx")
+ages <- ages %>% select(ownerID, DEMO_AGE)
+phys <- read_excel("report_Physical_Activity_baseline_2021.02.23_activeusers.xls")
+IDs <- read_excel("et.idsabbrev.xlsx")
+ht_wt <- read_excel("ht_wt.xlsx")
+demosex <- demosex %>% rename("ownerID"="ownerId")
+demosex <- demosex %>% rename("PatientSexComplete"="PatientSex")
+phys <- phys %>% rename("ownerID"="Owner ID")
+IDs <- IDs %>% rename("ownerID"="Ownerid")
+ht_wt <- ht_wt %>% rename("ownerID"="X")
+ages <- ages %>% rename("ownerID"="ownerID")
+
+# Fix Height
+ht_wt$PatientHeightInchesTotal <- (ht_wt$PatientHeightFeet*12)+ht_wt$PatientHeightInches
+ht_wt$PatientHeightInchesTotal2 <- (ht_wt$PatientHeightCM*0.393701)
+ht_wt$PatientHeight <- coalesce(ht_wt$PatientHeightInchesTotal, ht_wt$PatientHeightInchesTotal2)
+
+# Merge
+masterraw1.1 <- join(IDs, rawsurveys, by="ownerID")
+masterraw1 <- join(masterraw1.1, demosex, by="ownerID")
+masterraw2 <- join(masterraw1, phys, by="ownerID")
+masterraw3 <- join(masterraw2, ht_wt, by="ownerID")
+masterraw <-join(masterraw3, ages, by="ownerID")
+colnames(masterraw)[colnames(masterraw) == 'demo _in_30days_phys'] <- 'demo_in_30days_phys'
+
+```
+
+## Variable Setups:
+
+Variables are made to be the correct types, factors are collapsed, outcome variables are created and Neuro-QoL T scores and BMI groups are determined. 
+
+* Seasons are determined from month of physical activity survey completion. 
+
+* Regions of the US are based on state and collapsed based on the Census Bureau-designated regions and divisions.
+
+* Race is collapsed to "Black", "White", and "Other."
+
+* Physical activity is determined as a numeric and as binary variables (in particular - any exercise and meeting weekly recommendations).
+
+* Employment is collapsed down to include "Employed", "Unemployed", "Disabled", and "Student".
+
+* BMI is calculated and made into a factor ("Underweight", "Normal", "Overweight", "Obese")
+
+
+```{r fix variables, warning = FALSE, class.source = 'fold-hide'}
+
+# Season
+masterraw$physical_submission2 <- as.Date(masterraw$physical_submission)
+masterraw$physmonth <- as.factor(month(masterraw$physical_submission2))
+masterraw$physmonth <- fct_collapse(masterraw$physmonth,
+  'Spring' = c('3', '4', '5'),
+  'Summer' = c('6', '7', '8'),
+  'Autumn'= c('9', '10', '11'),
+  'Winter' = c('12', '1', '2'))
+
+# Region
+masterraw$ParticipantStateReside <- as.factor(masterraw$ParticipantStateReside)
+masterraw$region <- fct_collapse(masterraw$ParticipantStateReside, # Collapsed based on "Census Bureau-designated regions and divisions"
+  'Northeast' = c('Connecticut', 'Maine', 'Massachusetts', 'NewHampshire', 'RhodeIsland', 
+                  'Vermont', 'NewJersey', 'NewYork', 'Pennsylvania'),
+  'Midwest' = c('Illinois', 'Indiana', 'Michigan', 'Ohio', 'Wisconsin', 'Iowa', 'Kansas', 
+                'Minnesota', 'Missouri', 'Nebraska', 'NorthDakota', 'SouthDakota'),
+  'South'= c('Delaware', 'Florida', 'Georgia', 'Maryland', 'NorthCarolina', 'NC', 
+             'SouthCarolina', 'Virginia', 'DC', 'WestVirginia', 'Alabama', 'Kentucky', 
+             'Mississippi', 'Tennessee','Arkansas', 'Louisiana', 'Oklahoma', 'Texas'),
+  'West' = c('Arizona', 'Colorado', 'Idaho', 'Montana', 'Nevada', 'NewMexico', 'Utah', 
+                 'Wyoming','Alaska', 'California', 'Hawaii', 'Oregon', 'Washington'))
+
+#Race
+masterraw$USRace2 <- as.factor(masterraw$USRace)
+masterraw$USRace2 <- fct_collapse(masterraw$USRace2,
+    'Other' = c('Multiracial', 'MiddleEastern', 'DK', 'Asian', 'AI/NH'),
+    'Black' = 'Black',
+    'White' = 'White')
+masterraw$USRace2 <- relevel(masterraw$USRace2, ref = 'White')
+
+#Sex
+masterraw$PatientSexComplete <- as.factor(masterraw$PatientSexComplete)
+masterraw$PatientSexComplete <- fct_collapse(masterraw$PatientSexComplete,
+    NULL = c('Other', 'PreferNotAnswer', NULL),
+    'F' = 'F',
+    'M' = 'M')
+masterraw$PatientSexComplete <- relevel(masterraw$PatientSexComplete, ref = 'F')
+
+# Physical Activity
+colnames(masterraw)[colnames(masterraw) == 'Strenuous Exercise (heart beats rapidly) (e.g., running, jogging, hockey, football, soccer, squash, basketball, cross country skiing, judo, roller skating, vigorous swimming, vigorous long distance bicycling) (StrenuousExercise)'] <- 'strenuous'
+colnames(masterraw)[colnames(masterraw) == 'Moderate Exercise (not exhausting) (e.g., fast walking, baseball, tennis, easy bicycling, volleyball, badminton, easy swimming, alpine skiing, popular and folk dancing) (ModerateExercise)'] <- 'moderate'
+colnames(masterraw)[colnames(masterraw) == 'Mild Exercise (minimal effort) (e.g. yoga, archery, fishing from river bank, bowling, horseshoes, golf, easy walking) (MildExercise)'] <- 'mild'
+masterraw$strenuous <- as.numeric(masterraw$strenuous) # As Numeric
+masterraw$moderate <- as.numeric(masterraw$moderate)
+masterraw$mild <- as.numeric(masterraw$mild)
+masterraw$allphyssum <- masterraw$strenuous + masterraw$moderate + masterraw$mild #Sum of all activity
+masterraw$anystrenuous <- as.factor(masterraw$strenuous) # As binary
+masterraw$anystrenuous <- fct_collapse(masterraw$anystrenuous,
+  '0' = '0',
+  '1' = c('1', '2','3','4','5','6','7','8','9','10','11','12'))
+masterraw$anymoderate <- as.factor(masterraw$moderate)
+masterraw$anymoderate <- fct_collapse(masterraw$anymoderate,
+  '0' = '0',
+  '1' = c('1', '2','3','4','5','6','7','8','9','10','11','12','13','14','15','18','21','28'))
+masterraw$anymild <- as.factor(masterraw$mild)
+masterraw$anymild <- fct_collapse(masterraw$anymild,
+  '0' = '0',
+  '1' = c('1', '2','3','4','5','6','7','8','9','10','11','12','13','14','15','16','17','18','19','20','21', '25','35'))
+masterraw$mildplus <- as.numeric(as.character(masterraw$anymild)) + as.numeric(as.character(masterraw$anymoderate)) + 
+  as.numeric(as.character(masterraw$anystrenuous)) #Any exercise
+masterraw$mildplus <- as.factor(masterraw$mildplus)
+masterraw$mildplus <- fct_collapse(masterraw$mildplus,
+  '0' = '0',
+  '1' = c('1', '2','3'))
+masterraw$modplus <- as.numeric(as.character(masterraw$anymoderate)) + as.numeric(as.character(masterraw$anystrenuous)) #Moderate Plus
+masterraw$modplus <- as.factor(masterraw$modplus)
+masterraw$modplus <- fct_collapse(masterraw$modplus,
+  '0' = '0',
+  '1' = c('1', '2'))
+masterraw$strenplus <- masterraw$anystrenuous # Strenuous Plus
+masterraw$recommendedphys <- as.factor(masterraw$allphyssum) # Weekly Recommended
+masterraw$recommendedphys <- fct_collapse(masterraw$recommendedphys,
+  'Below Recommended' = c('0','1', '2','3'),
+  'Meet Recommended' = c('4','5','6','7','8','9','10','11','12', '13', '14','15','16','17','18','19','20',
+                         '21','22', '23', '24','25','26','27','28','29','30','31','32', '33','35','42','43'))
+
+#Neuro-QoL
+# Communication Short Form (NO T-SCORE)
+masterraw$communication <- masterraw$NQCOG01 + masterraw$NQCOG04 + masterraw$NQCOG08 + masterraw$NQCOG10 + masterraw$NQCOG11
+# Anxiety Short Form
+masterraw$anxiety <- masterraw$EDANX53 + masterraw$EDANX46 + masterraw$EDANX48 + masterraw$EDANX41 + masterraw$EDANX54 + 
+  masterraw$EDANX55 + masterraw$NQANX09 + masterraw$NQANX07
+masterraw$anxietyT <- as.factor(masterraw$anxiety)
+masterraw$anxietyT <- recode_factor(masterraw$anxiety, '8' = '36.4', '9' = '42.1', '10'= '44.3', '11' = '45.9', 
+                                '12' = '47.3', '13' = '48.4', '14' = '49.5', '15' = '50.5', '16' = '51.4',
+                                '17' = '52.3', '18' = '53.3', '19' = '54.2', '20'= '55.0', '21' = '55.9',
+                                '22' = '56.8', '23' = '57.6', '24' = '58.4', '25' = '59.3', '26' = '60.1',
+                                '27' = '60.9', '28' = '61.8', '29' = '62.6', '30'= '63.4', '31' = '64.2',
+                                '32' = '65.1', '33' = '65.9', '34' = '66.8', '35' = '67.8', '36' = '68.9',
+                                '37' = '70.0', '38' = '71.5', '39' = '73.3', '40' = '76.8')
+masterraw$anxietyT <- as.numeric(masterraw$anxiety)
+# Depression Short Form
+masterraw$depression <- masterraw$EDDEP29 + masterraw$EDDEP41 + masterraw$EDDEP09 + masterraw$EDDEP48 + masterraw$EDDEP04 +
+  masterraw$EDDEP36 + masterraw$EDDEP39 + masterraw$EDDEP45
+masterraw$depressionT <- as.factor(masterraw$depression)
+masterraw$depressionT <- recode_factor(masterraw$depressionT, '8' = '36.9', '9' = '43.1', '10'= '45.3', '11' = '46.8', 
+                                '12' = '47.9', '13' = '48.9', '14' = '49.8', '15' = '50.6', '16' = '51.3',
+                                '17' = '52.1', '18' = '52.8', '19' = '53.6', '20'= '54.3', '21' = '55.1',
+                                '22' = '55.9', '23' = '56.7', '24' = '57.4', '25' = '58.2', '26' = '59.0',
+                                '27' = '59.8', '28' = '60.6', '29' = '61.4', '30'= '62.2', '31' = '63.0',
+                                '32' = '63.8', '33' = '64.6', '34' = '65.4', '35' = '66.3', '36' = '67.3',
+                                '37' = '68.3', '38' = '69.6', '39' = '71.3', '40' = '75.0')
+masterraw$depressionT <- as.numeric(masterraw$depressionT)
+# Fatigue Short Form
+masterraw$fatigue <- masterraw$NQFTG13 + masterraw$NQFTG11 + masterraw$NQFTG15 + masterraw$NQFTG06 + masterraw$NQFTG07 +
+  masterraw$NQFTG10 + masterraw$NQFTG14 + masterraw$NQFTG02 
+masterraw$fatigueT <- as.factor(masterraw$fatigue)
+masterraw$fatigueT <- recode_factor(masterraw$fatigueT, '8' = '29.5', '9' = '34.1', '10'= '36.5', '11' = '38.2', 
+                                '12' = '39.5', '13' = '40.7', '14' = '41.8', '15' = '42.8', '16' = '43.8',
+                                '17' = '44.7', '18' = '45.6', '19' = '46.5', '20'= '47.4', '21' = '48.4',
+                                '22' = '49.3', '23' = '50.3', '24' = '51.3', '25' = '52.3', '26' = '53.3',
+                                '27' = '54.4', '28' = '55.4', '29' = '56.5', '30'= '57.6', '31' = '58.8',
+                                '32' = '59.9', '33' = '61.1', '34' = '62.3', '35' = '63.5', '36' = '64.8',
+                                '37' = '66.2', '38' = '67.9', '39' = '70.1', '40' = '74.1')
+masterraw$fatigueT <- as.numeric(masterraw$fatigueT)
+# Upper Extremity Function Short Form
+masterraw$upperex <- masterraw$PFA40 + masterraw$PFA50 + masterraw$NQUEX44 + masterraw$PFB21 + masterraw$PFA43 +
+  masterraw$PFA35 + masterraw$PFA55 + masterraw$PFB26 
+masterraw$upperexT <- as.factor(masterraw$upperex)
+masterraw$upperexT <- recode_factor(masterraw$upperexT, '8' = '12.8', '9' = '13.7', '10'= '14.7', '11' = '15.8', 
+                                '12' = '16.8', '13' = '18.0', '14' = '19.0', '15' = '19.9', '16' = '20.8',
+                                '17' = '21.6', '18' = '22.4', '19' = '23.1', '20'= '23.9', '21' = '24.6',
+                                '22' = '25.3', '23' = '26.0', '24' = '26.7', '25' = '27.3', '26' = '28.0',
+                                '27' = '28.7', '28' = '29.5', '29' = '30.2', '30'= '30.9', '31' = '31.7',
+                                '32' = '32.6', '33' = '33.5', '34' = '34.5', '35' = '35.6', '36' = '37.1',
+                                '37' = '39.3', '38' = '41.2', '39' = '43.7', '40' = '53.8')
+masterraw$upperexT <- as.numeric(masterraw$upperexT)
+# Lower Extremity Function Short Form
+masterraw$lowerex <- masterraw$PFC45 + masterraw$PFA30+ masterraw$PFA56 + masterraw$PFA45 + masterraw$PFA12 +
+  masterraw$PFA53 + masterraw$PFA31 + masterraw$PFA31 
+masterraw$lowerexT <- as.factor(masterraw$lowerex)
+masterraw$lowerexT <- recode_factor(masterraw$lowerexT, '8' = '16.5', '9' = '19.2', '10'= '21.1', '11' = '22.6', 
+                                '12' = '23.9', '13' = '25.1', '14' = '26.2', '15' = '27.2', '16' = '28.1',
+                                '17' = '29.0', '18' = '29.9', '19' = '30.7', '20'= '31.5', '21' = '32.2',
+                                '22' = '33.0', '23' = '33.7', '24' = '34.5', '25' = '35.2', '26' = '36.0',
+                                '27' = '36.7', '28' = '37.5', '29' = '38.3', '30'= '39.1', '31' = '39.9',
+                                '32' = '40.8', '33' = '41.7', '34' = '42.8', '35' = '43.9', '36' = '45.2',
+                                '37' = '46.7', '38' = '48.6', '39' = '51.2', '40' = '58.6')
+masterraw$lowerexT <- as.numeric(masterraw$lowerexT)
+# Cognitive Function Short Form
+masterraw$cognitive <- masterraw$NQCOG64 + masterraw$NQCOG75 + masterraw$NQCOG77 + masterraw$NQCOG80 + masterraw$NQCOG22 +
+  masterraw$NQCOG24 + masterraw$NQCOG25 + masterraw$NQCOG40 
+masterraw$cognitiveT <- as.factor(masterraw$cognitive)
+masterraw$cognitiveT <- recode_factor(masterraw$cognitiveT, '8' = '17.3', '9' = '20.4', '10'= '22.6', '11' = '24.4', 
+                                '12' = '25.9', '13' = '27.3', '14' = '28.6', '15' = '29.8', '16' = '30.9',
+                                '17' = '32.0', '18' = '33.0', '19' = '34.0', '20'= '35.0', '21' = '36.0',
+                                '22' = '37.0', '23' = '37.9', '24' = '38.9', '25' = '39.9', '26' = '40.9',
+                                '27' = '41.9', '28' = '42.9', '29' = '43.9', '30'= '44.9', '31' = '46.0',
+                                '32' = '47.1', '33' = '48.3', '34' = '49.6', '35' = '50.9', '36' = '52.4',
+                                '37' = '54.2', '38' = '56.3', '39' = '59.0', '40' = '64.2')
+masterraw$cognitiveT <- as.numeric(masterraw$cognitiveT)
+# Emotional and Behavioral Dyscontrol Short Form
+masterraw$ebdys <- masterraw$EDANG42 + masterraw$NQPER05 + masterraw$NQPER06 + masterraw$NQPER07 + masterraw$NQPER11 +
+  masterraw$NQPER12 + masterraw$NQPER17 + masterraw$NQPER19 
+masterraw$ebdysT <- as.factor(masterraw$ebdys)
+masterraw$ebdysT <- recode_factor(masterraw$ebdysT, '8' = '32.2', '9' = '37.2', '10'= '39.9', '11' = '42.0', 
+                                '12' = '43.7', '13' = '45.3', '14' = '46.7', '15' = '48.1', '16' = '49.4',
+                                '17' = '50.7', '18' = '52.0', '19' = '53.2', '20'= '54.5', '21' = '55.8',
+                                '22' = '57.0', '23' = '58.3', '24' = '59.6', '25' = '60.8', '26' = '62.1',
+                                '27' = '63.3', '28' = '64.5', '29' = '65.8', '30'= '66.9', '31' = '68.1',
+                                '32' = '69.3', '33' = '70.6', '34' = '71.8', '35' = '73.1', '36' = '74.5',
+                                '37' = '76.0', '38' = '77.7', '39' = '79.8', '40' = '82.6')
+masterraw$ebdysT <- as.numeric(masterraw$ebdysT)
+# Positive Affect and Well-Being Short Form
+masterraw$pos <- masterraw$NQPPF14 + masterraw$NQPPF12 + masterraw$NQPPF15 + masterraw$NQPPF20 + masterraw$NQPPF17 +
+  masterraw$NQPPF22 + masterraw$NQPPF19 + masterraw$NQPPF16 + masterraw$NQPPF07
+masterraw$posT <- as.factor(masterraw$pos)
+masterraw$posT <- recode_factor(masterraw$posT,'9' = '26.3', '10'= '30.2', '11' = '32.0', '12' = '33.3', 
+                             '13' = '34.3', '14' = '35.3', '15' = '36.1', '16' = '37.0','17' = '37.8', 
+                             '18' = '38.6', '19' = '39.4', '20' = '40.2', '21' = '41.1', '22' = '41.8', 
+                             '23' = '42.7', '24' = '43.5', '25' = '44.4', '26' = '45.3', '27' = '46.3', 
+                             '28' = '47.2', '29' = '48.1', '30' = '49.0', '31' = '49.9', '32' = '50.7', 
+                             '33' = '51.5', '34' = '52.3', '35' = '53.2', '36' = '54.0', '37' = '54.9', 
+                             '38' = '55.8', '39' = '56.8', '40' = '57.8', '41' = '58.8', '42' = '59.9', 
+                             '43' = '61.3', '44' = '63.3', '45' = '68.0')
+masterraw$posT <- as.numeric(masterraw$posT)
+# Sleep Disturbance Short Form
+masterraw$sleep <- masterraw$NQSLP02 + masterraw$NQSLP03 + masterraw$NQSLP04 + masterraw$NQSLP05 + masterraw$NQSLP07 +
+  masterraw$NQSLP12 + masterraw$NQSLP13 + masterraw$NQSLP18 
+masterraw$sleepT <- as.factor(masterraw$sleep)
+masterraw$sleepT <- recode_factor(masterraw$sleepT, '8' = '32.0', '9' = '36.3', '10'= '39.1', '11' = '41.7', 
+                                '12' = '43.8', '13' = '45.6', '14' = '47.3', '15' = '48.9', '16' = '50.4',
+                                '17' = '51.8', '18' = '53.1', '19' = '54.4', '20'= '55.6', '21' = '56.8',
+                                '22' = '58.0', '23' = '59.2', '24' = '60.4', '25' = '61.6', '26' = '62.8',
+                                '27' = '63.9', '28' = '65.1', '29' = '66.4', '30'= '67.6', '31' = '68.9',
+                                '32' = '70.3', '33' = '71.7', '34' = '73.2', '35' = '74.7', '36' = '76.4',
+                                '37' = '78.2', '38' = '80.2', '39' = '82.2', '40' = '84.2')
+masterraw$sleepT <- as.numeric(masterraw$sleepT)
+# Ability to Participate in Social Roles Short Form
+masterraw$socialability <- masterraw$NQPRF01 + masterraw$NQPRF03 + masterraw$NQPRF08 + masterraw$NQPRF09 + masterraw$NQPRF17 +
+  masterraw$NQPRF26 + masterraw$NQPRF32 + masterraw$NQPRF34 
+masterraw$socialabilityT <- as.factor(masterraw$socialability)
+masterraw$socialabilityT <- recode_factor(masterraw$socialabilityT, '8' = '24.1', '9' = '27.7', '10'= '29.5', '11' = '30.8',
+                                '12' = '31.8', '13' = '32.7', '14' = '33.5', '15' = '34.3', '16' = '35.0',
+                                '17' = '35.7', '18' = '36.4', '19' = '37.1', '20'= '37.8', '21' = '38.5',
+                                '22' = '39.2', '23' = '39.9', '24' = '40.6', '25' = '41.3', '26' = '42.0',
+                                '27' = '42.7', '28' = '43.4', '29' = '44.0', '30'= '44.7', '31' = '45.4',
+                                '32' = '46.1', '33' = '46.8', '34' = '47.5', '35' = '48.3', '36' = '49.2',
+                                '37' = '50.2', '38' = '51.6', '39' = '53.4', '40' = '60.2')
+masterraw$socialabilityT <- as.numeric(masterraw$socialabilityT)
+# Satisfaction with Social Roles and Activities Short Form
+masterraw$socsat <- masterraw$NQSAT03 + masterraw$NQSAT23 + masterraw$NQSAT14 + masterraw$NQSAT11 + masterraw$SRPSAT33 +
+  masterraw$SRPSAT05 + masterraw$SRPSAT07 + masterraw$NQSAT46 
+masterraw$socsatT <- as.factor(masterraw$socsat)
+masterraw$socsatT <- recode_factor(masterraw$socsatT, '8' = '28.4', '9' = '32.6', '10'= '34.0', '11' = '35.1', 
+                                '12' = '35.9', '13' = '36.7', '14' = '37.4', '15' = '38.0', '16' = '38.6',
+                                '17' = '39.1', '18' = '39.7', '19' = '40.2', '20'= '40.7', '21' = '40.7',
+                                '22' = '41.7', '23' = '42.2', '24' = '42.7', '25' = '43.2', '26' = '43.7',
+                                '27' = '44.2', '28' = '44.7', '29' = '45.2', '30'= '45.8', '31' = '46.3',
+                                '32' = '46.9', '33' = '47.5', '34' = '48.2', '35' = '48.9', '36' = '49.8',
+                                '37' = '50.7', '38' = '52.0', '39' = '53.7', '40' = '60.5')
+masterraw$socsatT <- as.numeric(masterraw$socsatT)
+# Stigma Short Form
+masterraw$stigma <- masterraw$NQSTG02+ masterraw$NQSTG04 + masterraw$NQSTG08 + masterraw$NQSTG16 + masterraw$NQSTG01 +
+  masterraw$NQSTG17 + masterraw$NQSTG05 + masterraw$NQSTG21 
+masterraw$stigmaT <- as.factor(masterraw$stigma)
+masterraw$stigmaT <- recode_factor(masterraw$stigmaT, '8' = '39.2', '9' = '45.7', '10'= '47.6', '11' = '49.3', 
+                                '12' = '50.6', '13' = '51.7', '14' = '52.8', '15' = '53.7', '16' = '54.6',
+                                '17' = '55.4', '18' = '56.2', '19' = '57.0', '20'= '57.8', '21' = '58.5',
+                                '22' = '59.3', '23' = '60.1', '24' = '60.8', '25' = '61.6', '26' = '62.4',
+                                '27' = '63.2', '28' = '64.0', '29' = '64.8', '30' = '65.7', '31' = '66.6',
+                                '32' = '67.5', '33' = '68.5', '34' = '69.6', '35' = '70.8', '36' = '72.2',
+                                '37' = '73.7', '38' = '75.6', '39' = '78.1', '40' = '81.5')
+masterraw$stigmaT <- as.numeric(masterraw$stigmaT)
+
+# MS Type
+masterraw$MSbestcharacterizes <- as.factor(masterraw$MSbestcharacterizes)
+masterraw$MSbestcharacterizes <- fct_collapse(masterraw$MSbestcharacterizes,
+  NULL = c(NA, '99', 'Missing', 'NULL'),
+  'CIS/RIS' = c('CIS', 'ris'),
+  'SPMS' = 'spms',
+  'PPMS' = 'ppms',
+  'RRMS' = 'rrms')
+
+masterraw$MSbestcharacterizes <- fct_explicit_na(masterraw$MSbestcharacterizes, na_level = "Missing")
+masterraw$MSbestcharacterizes <- relevel(masterraw$MSbestcharacterizes, ref='RRMS')
+
+# Employment
+masterraw$EmployStatus <- as.factor(masterraw$EmployStatus)
+masterraw$EmployStatus <- fct_explicit_na(masterraw$EmployStatus, na_level = "Missing")
+masterraw$EmployStatus <- fct_collapse(masterraw$EmployStatus,
+  'Unemployed' = c('UnemployedNotLooking', 'Unemployed', 'Homemaker', 'Retired'),
+  'Employed' = c('EmployedOutside','EmployedHome'),
+  'Disabled' = c('Disabled', 'WorkmensComp'),
+  'Missing' = c('PreferNotAnswer', 'Missing', NULL, NA))
+masterraw$EmployStatus <- fct_explicit_na(masterraw$EmployStatus, na_level = "Missing")
+masterraw$EmployStatus <- relevel(masterraw$EmployStatus, ref='Employed')
+
+# BMI
+BMI <- read_excel("CohortFebNBnew.xlsx")
+BMI <- BMI %>% select(X, BMI)
+BMI <- BMI %>% rename("bmi"="BMI")
+BMI <- BMI %>% rename("ownerID"="X")
+masterraw <-join(masterraw, BMI, by="ownerID")
+masterraw$bmi <- cut(masterraw$bmi, breaks = c(0, 18.5, 25, 30, 100),
+    labels =c("Underweight","Normal","Overweight","Obese"))
+masterraw$bmi <- fct_explicit_na(masterraw$bmi, na_level = "Missing")
+masterraw$bmi <- relevel(masterraw$bmi, ref='Normal')
+
+# Race
+masterraw$USRace <- as.factor(masterraw$USRace)
+
+# PDDS
+masterraw$PDDS <- as.numeric(masterraw$PDDS)
+```
+
+
+## Final Dataset:
+
+A `master` dataset is created, containing all the entries that both completed the Neuro-QoL and finished the demographic and physical activities surveys within 30 days of each other.
+
+```{r master dataset, warning = FALSE}
+
+masterraw$fullNeuroQoL <- complete.cases(masterraw$cognitiveT)
+master <- masterraw %>% filter(`demo_in_30days_phys`=="1")
+master <- master %>% filter(`fullNeuroQoL`=='TRUE')
+                            
+write_xlsx(master, "ETCapstoneData.xlsx") 
+write_xlsx(masterraw, "ETCapstoneDataRaw.xlsx") 
+
+nrow(master)
+
+```
+We find that this is 640 individuals.
+
+
+# Table 1:
+
+Next, we look at these entries.
+
+## The Subset I'm Studying:
+```{r table 1, warning = FALSE}
+
+table1(~ DEMO_AGE + USRace2 + MSbestcharacterizes + lowerexT + PatientSexComplete + bmi + allphyssum + cognitiveT + posT + depressionT, data=master)
+
+```
+
+The mean age is 51.8. The population is mostly white, female, and RRMS. This is more or less expected.
+
+## The Subset I'm Studying, By Race:
+
+We can also look at the breakup by race:
+
+```{r table 1 race, warning = FALSE}
+
+table1(~ DEMO_AGE + MSbestcharacterizes + PatientSexComplete + bmi + lowerex + allphyssum + cognitiveT + posT + depressionT | USRace2, data=master)
+
+```
+
+Nothing really strikes the eye.
+
+## The Subset I'm Studying vs. Everyone Who Completed the iConquerMS Surveys:
+
+To ensure that our study population (which is filtered down to those who completed the surveys within 30 days of each other AND did all of the Neuro-QoL) looks like that of the overall iConquerMS population, we can compare the two ("True" are the people we are looking at):
+
+```{r table 1 with 30 days phys, warning = FALSE}
+
+table1(~ DEMO_AGE + USRace2 + MSbestcharacterizes + bmi + PatientSexComplete + lowerex + allphyssum + cognitiveT + posT + depressionT | fullNeuroQoL + demo_in_30days_phys, data=masterraw)
+
+```
+
+Perhaps the race and MS subtypes aren't 100% a match, but these look really close.
+
+
+# Correlation and Variance Inflation:
+
+I wanted to get an idea of which variables it might be wise to drop, so I ran a few tests
+
+## Correlation:
+
+Between variables - the short forms, as well as lower extremity funciton (a stand in for disability) and employment status
+
+### Between the Short Form Scores:
+
+First, the correlation between the T scores of the short forms:
+
+```{r cog pos, warning = FALSE}
+
+# Cognitive Function and Positive Affect
+cogposT <- cor.test(master$cognitiveT, master$posT, 
+                    method = "pearson")
+cogposT
+
+# Depression and Cognitive Affect
+depposT <- cor.test(master$depressionT, master$posT, 
+                    method = "pearson")
+depposT
+
+# Depression and Cognitive Function
+depcogT <- cor.test(master$depressionT, master$cognitiveT, 
+                    method = "pearson")
+depcogT
+
+
+```
+
+This isn't surprising. (I would be shocked if the short forms weren't correlated with each other.) 
+
+I am a rather visual person, so I find GGPairs is a huge help here:
+
+```{r fun times with ggpairs, warning = FALSE}
+
+ggpairs(master %>% select(lowerexT, cognitiveT, posT, depressionT))
+
+```
+
+Take a look at that! Positive affect and depression's scatterplot is... a line! It's generally safe to say that happier people (higher positivity score) tend to have fewer depression symptoms (lower depression score) and vice versa, but it is still very cool and fun.
+
+
+### Between Lower Extremity Function and Employment:
+
+Next, lower extremity function and employment:
+
+```{r emp lowerex, warning = FALSE}
+
+emplowerexT <- lm(lowerexT ~ EmployStatus, 
+                    data = master)
+summary(emplowerexT)
+
+```
+It's a little awkward to interpret, but I guess the main takeaway here is that lower extremity function is essentially a function of employment status for our employed (intercept), disabled, and unemployed individuals (who make up most of our respondents). It would be pretty easy to swap out one of these variables for the other
+
+
+
+## Variance Inflation:
+
+I also played with variance inflation measures - I took the T score kitchen sink models (minus employment, as lower extremity function has those covered) and looked at which variables I might want to drop in order to reduce collinearity:
+
+### Numeric Outcome (without employment):
+
+```{r variance inflation no emp, warning = FALSE}
+
+car::vif(pscl::zeroinfl(allphyssum ~ physmonth + region + USRace2 + bmi + PatientSexComplete + MSbestcharacterizes + DEMO_AGE + lowerexT + cognitiveT + posT + depressionT, dist = "negbin", data = master))
+
+```
+Age, lower extremity function, and our 3 T scores are popping up.
+
+
+### Binary - Meeting Recommendations:
+```{r variance inflation recommended, warning = FALSE}
+
+car::vif(glm(recommendedphys ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + PatientSexComplete + lowerexT +  cognitiveT + posT + depressionT, data = master, family = "binomial"))
+
+```
+Positive affect and depression are the worst here, in terms of variance inflation.
+
+### Binary - Any exercise:
+```{r variance inflation any, warning = FALSE}
+
+car::vif(glm(mildplus ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + PatientSexComplete +  lowerexT + cognitiveT + posT + depressionT, data = master, family = "binomial"))
+
+```
+Positive affect and depression, once again. What happens if we pick between the two? Let's drop positive affect:
+
+```{r variance inflation, warning = FALSE}
+
+car::vif(glm(mildplus ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + PatientSexComplete + lowerexT + cognitiveT + depressionT, data = master, family = "binomial"))
+
+```
+Very nice! 
+
+## Takeaways:
+
+1) As you can expect, all 3 short forms are significantly correlated. We still want to factor them into our analysis, but it appears that dropping either positive affect or depression can cut down on variance. Fewer variables is always the better approach. I will stick with models that drop the positive affect short form here.
+
+2) The Neuro-QoL lower extremity function short form is a good stand-in for employment. I have attempted both with and without employment status, and have decided to drop it for the models shown here.
+
+
+
+# Analysis of a Binary and a Quantitative Outcome: Exercise Initiation and the Number of Instances of Exercise Per Week (Zero Inflated Negative Binomial):
+
+NOTE 1: All models will were run with Neuro-QoL short forms as both the T score and the raw score. For brevity's sake, I'm sticking with the T scores. The results really aren't that different between models, as the T score simply adjusts the raw slightly.
+
+NOTE 2: As this is a zero inflated negative binomial, these results tell us about both the exercise initiation (binary) and number of exercise sessions per week (numeric).
+
+NOTE 3: "Kitchen sink" here means: month of survey completion, region of the US, race, BMI, sex, MS subtype, age, lower extremity function and all 3 short forms. Employment is left out, as explained above.
+
+
+## Kitchen Sink:
+```{r kitchen sink numeric, warning = FALSE}
+
+## T Score
+ksmodelT <- pscl::zeroinfl(allphyssum ~ physmonth + region + USRace2 + bmi + PatientSexComplete + MSbestcharacterizes + DEMO_AGE + lowerexT + cognitiveT + posT + depressionT, dist = "negbin", data = master)
+summary(ksmodelT)
+
+```
+Factors popping up for the logit model portion (exercise initiation):
+
+*  Lower extremity function (disability): individuals with higher lower extremity function scores (less disabled) were less likely to exercise at all
+
+*  Cognitive function: a higher cognitive function score (better cognitive function) was linked to an increased likelihood of exercising
+
+*  BMI: underweight individuals were more likely to exercise at all
+
+*  Season: individuals responding in the summer were more likely to report exercising at all than those responding in winter
+
+
+Factors popping up for the negative binomial model portion (exercise counts):
+
+*  Sex: males who exercised did so more than females
+
+*  Age: older individuals who exercise reported fewer instances of activity than younger individuals who exercise
+
+*  Lower extremity function: individuals who exercised and had higher scores (lower level of disability) exercised more times weekly
+
+
+
+## Kitchen Sink Minus Positive Affect:
+
+```{r kitchen sink minus pos numeric, warning = FALSE}
+
+## T Score
+ksminusmodelT <- pscl::zeroinfl(allphyssum ~ physmonth + region + USRace2 + bmi + PatientSexComplete + MSbestcharacterizes + DEMO_AGE + lowerexT + cognitiveT + depressionT, dist = "negbin", data = master)
+summary(ksminusmodelT)
+exp(coef(ksminusmodelT))
+
+```
+When we stop including positive affect and just look at cognitive function and depression, we see a change in  the negative binomial model portion (weekly exercise counts): we see that among, individuals who exercise, better cognition (higher scores) and more symptoms of depression (higher scores) are related to more exercise.
+
+
+## A Brief Summary of the Stratified Models (Kitchen Sink Minus Positive Affect):
+
+### By Sex:
+
+Males: R was unable to calculate p-values on these models.
+
+Females:
+
+*  BMI: normal and obese exercise individuals who exercised did so fewer times per week than those with an underweight BMI who exercised
+
+*  Lower extremity function: higher scores (less disability) were found to be correlated with lower likelihood of initiating in exercise, but increased count of exercise in those who exercised
+
+*  Neither the depression nor the cognitive short forms showed up as significant
+
+
+
+### By BMI Group:
+
+Normal and underweight were collapsed into 1 level, due to sample size.
+
+Normal/underweight: 
+
+*  Season: for those who reported exercising, reporting in summer was found to be associated with higher counts of exercise than winter
+
+*  Region: those living in the midwest were less likely to report any exercise than those in the south
+
+*  Sex: males were more likely to report any exercise
+
+*  Subtype: for those who reported exercising, those with SPMS reported more exercise than those with RRMS
+
+*  Lower extremity function: higher scores (less disability) were found to be correlated with a lower count of exercise in those who exercised
+
+*  Neither the depression nor the cognitive short forms showed up as significant
+
+Overweight: R was unable calculate p-values on these models.
+
+Obese: 
+
+*  Subtype: Individuals with CIS/RIS and PPMS reported more instances exercise than individuals with RRMS 
+
+*  Lower Extremity: higher scores (less disability) were found to be correlated with lower likelihood of initiating in exercise, but increased count of exercise in those who exercised
+
+*  Cognitive Function: higher scores (better function) were found to be correlated with increased  likelihood of engaging in any exercise
+
+*  Depression: higher scores (more depressed) were found to be correlated with increased likelihood of engaging in any exercise
+
+
+
+# Analysis of a Binary Outcome: Meeting Expectations (Logit model):
+
+https://my.clevelandclinic.org/departments/neurological/depts/multiple-sclerosis/ms-approaches/exercise-in-ms - PwMS are recommended to get aerobic exercise at least 3-4 days per week (NCHPAD Guidelines), so let's set it at 4 times as a "minimum" recommended and see what seems to influence the likelihood of meeting weekly exercise recommendations.
+
+## Kitchen Sink:
+```{r kitchen sink binary, warning = FALSE}
+
+## T Score
+recommendationsTnoemp <- glm(recommendedphys ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + PatientSexComplete + lowerexT +  cognitiveT + posT + depressionT, data = master, family = "binomial")
+summary(recommendationsTnoemp)
+
+```
+Likelihood of meeting recommendations is significantly correlated with:
+
+  *  BMI: Obese individuals are less likely to meet their weekly recommended exercise
+  
+  *  MS subtype: Individuals with SPMS are less likely to meet their weekly recommended exercise (as this is a more debilitating form of MS, this makes sense, however we have also accounted for disability here through lower extremity function)
+  
+  *  Lower extremity function: higher scores (less disability) are linked to an increased likelihood of meeting recommendations
+  
+  *  Positive affect: happier people are more likely to be meeting their exercise recommendations
+
+
+## Kitchen Sink Minus Positive Affect:
+
+```{r kitchen sink minus pos binary, warning = FALSE}
+
+## T Score
+recommendationsTnoempnopos <- glm(recommendedphys ~ physmonth + region + USRace2 + bmi + MSbestcharacterizes + DEMO_AGE + PatientSexComplete + lowerexT +  cognitiveT + depressionT, data = master, family = "binomial")
+summary(recommendationsTnoempnopos)
+
+exp(coef(recommendationsTnoempnopos))
+
+```
+Without using the positive affect scoring, we find essentially the same things, only now the depression T score is popping up: a higher score (more symptoms of depression) is linked to a lower likelihood of meeting recommendations. 
+
+
+## A Brief Summary of the Stratified Models:
+
+### By Sex:
+
+Males: 
+
+*  Region: Males in the Northeast were more likely to meet expectations than those in the south
+
+*  MS Subtype: Males with SPMS were more likely to meet expectations
+
+*  Lower extremity function: males with higher scores (less disability) were more likely to meet recommendations
+
+*  Cognitive function: males with higher scores (better cognition) were less likely to meet recommendations
+
+*  Depression: males with higher scores (more depressed) were less likely to meet recommendations 
+
+
+Females: 
+
+*  Region: Females in the West were more likely to meet expectations than those in the South
+
+*  Lower extremity function: females with higher scores (less disability) were more likely to meet recommendations
+
+*  Depression: females with higher scores (more depressed) were less likely to meet recommendations 
+
+
+### By BMI Group:
+
+Normal and underweight were collapsed into 1 level, due to sample size.
+
+Normal/underweight: 
+
+*  Age: Older individuals were less likely to meet expectations
+
+*  Lower extremity function: Individuals with higher scores (less disability) were more likely to meet recommendations
+  
+Overweight: 
+
+*  Season: Those who responded to the survey in autumn were less likely to meet recommendations than those responding in winter
+
+*  Subtype: Individuals with SPMS were more likely to meet expectations than those with RRMS
+
+*  Lower extremity function: individuals with higher scores (less disability) were more likely to meet recommendations
+
+*  Depression: individuals with higher scores (more depressed) were less likely to meet recommendations
+
+Obese: 
+
+*  Season: Those who responded to the survey in autumn were less likely to meet recommendations than those responding in winter
+
+*  Region: Those in the Northeast were less likely to meet recommendations than those in the South
+
+*  Race: Those who were categorized as "Other" were more likely to meet recommendations than white respondents
+
+*  Sex: Males were more likely to meet expectations
+
+*  Lower extremity function: Individuals with higher scores (less disability) were more likely to meet recommendations
+
